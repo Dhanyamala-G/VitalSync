@@ -126,16 +126,27 @@ export default function AmbulanceDashboard() {
     siren.stop();
     arrivedRef.current = false;
     setDistanceKm(null);
-    setRecommendations([]);
-    setBestHosp(null);
     setSentAlert(false);
     await updateEmergency(emergency.id, {
       status:       'dispatched',
       ambulanceId:  firebaseUser?.uid,
     });
     setActiveEmerg(emergency);
-    setTab('map');
-  }, [firebaseUser?.uid, siren]);
+
+    // Suggest best hospitals immediately on acceptance
+    const ambLat = gps.location?.lat ?? emergency.location.lat;
+    const ambLng = gps.location?.lng ?? emergency.location.lng;
+    const recs = recommendHospitals(
+      ambLat,
+      ambLng,
+      hospitals,
+      emergency.userBloodGroup || '',
+    );
+    setRecommendations(recs);
+    if (recs.length > 0) setBestHosp(recs[0]);
+
+    setTab('hospital');
+  }, [firebaseUser?.uid, siren, gps.location, hospitals]);
 
   const declineEmergency = useCallback(async (emergency: Emergency) => {
     await updateEmergency(emergency.id, { status: 'aborted' });

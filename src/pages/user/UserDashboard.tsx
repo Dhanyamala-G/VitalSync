@@ -18,8 +18,8 @@ import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
 import { createEmergency, updateEmergency, getTimestampMillis } from '../../services/emergencyService';
-import type { UserProfile, AIAnalysisResult, SensorData, Emergency } from '../../types';
-import { collection, onSnapshot, query } from 'firebase/firestore';
+import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
+import { collection, onSnapshot, query, doc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
 const BLOOD_COLORS: Record<string, string> = {
@@ -36,6 +36,7 @@ export default function UserDashboard() {
   const [dialogOpen,      setDialogOpen]      = useState(false);
   const [shakeMag,        setShakeMag]        = useState(0);
   const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
+  const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
   const [history,         setHistory]         = useState<Emergency[]>([]);
   const [motionEnabled,   setMotionEnabled]   = useState(false);
   const [tab,             setTab]             = useState<'home' | 'profile' | 'history'>('home');
@@ -102,18 +103,34 @@ export default function UserDashboard() {
     }
   }, [gps.location, activeEmergency]);
 
+  // Listen to dispatched ambulance profile updates in real-time
+  useEffect(() => {
+    if (!activeEmergency?.ambulanceId) {
+      setDispatchedAmbulance(null);
+      return;
+    }
+    return onSnapshot(doc(db, 'users', activeEmergency.ambulanceId), (snap) => {
+      if (snap.exists()) {
+        setDispatchedAmbulance({ uid: snap.id, ...snap.data() } as AmbulanceProfile);
+      }
+    });
+  }, [activeEmergency?.ambulanceId]);
+
   const handleAbort = () => setDialogOpen(false);
 
   const handleConfirmed = useCallback(async (result: AIAnalysisResult, sensor: SensorData) => {
     setDialogOpen(false);
-    if (!firebaseUser || !gps.location) return;
+    if (!firebaseUser) return;
+
+    // Use GPS location if available, otherwise fallback to mock Chennai location
+    const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
 
     const emergencyId = await createEmergency({
       userId:       firebaseUser.uid,
       userName:     user?.name || 'Unknown',
       userPhone:    user?.phone || '',
       userBloodGroup: user?.bloodGroup || 'Unknown',
-      location:     gps.location,
+      location:     emergencyLoc,
       status:       'confirmed',
       classification: result.classification,
       confidenceScore: result.confidenceScore,
@@ -127,7 +144,7 @@ export default function UserDashboard() {
       userName: user?.name || '',
       userPhone: user?.phone || '',
       userBloodGroup: user?.bloodGroup || '',
-      location: gps.location,
+      location: emergencyLoc,
       status: 'confirmed',
       classification: result.classification,
       confidenceScore: result.confidenceScore,
@@ -239,60 +256,121 @@ export default function UserDashboard() {
               </div>
             </div>
 
-            {/* Live Map */}
-            {gps.location && (
+            {/* Live Map / Tracker */}
+            {(gps.location || activeEmergency?.location) && (
               <MapView
-                center={gps.location}
-                markers={[{ lat: gps.location.lat, lng: gps.location.lng, label: 'You', color: 'red', pulse: true }]}
+                center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
+                markers={[
+                  { 
+                    lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
+                    lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
+                    label: 'You', 
+                    color: 'red' as const, 
+                    pulse: true 
+                  },
+                  ...(dispatchedAmbulance?.location ? [{
+                    lat: dispatchedAmbulance.location.lat,
+                    lng: dispatchedAmbulance.location.lng,
+                    label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
+                    color: 'blue' as const,
+                    pulse: true
+                  }] : [])
+                ]}
               />
             )}
 
-            {/* Sensor Status Card */}
-            <div className="card p-4">
-              <p className="section-title">Sensor Status</p>
-              <div className="grid grid-cols-3 gap-3">
-                <div className={`rounded-xl p-3 text-center ${shake.isShaking ? 'bg-brand-50' : 'bg-gray-50'}`}>
-                  <Activity className={`w-5 h-5 mx-auto mb-1 ${shake.isShaking ? 'text-brand-600 animate-pulse-fast' : 'text-gray-400'}`} />
-                  <p className="text-xs font-medium text-gray-600">Shake</p>
-                  <p className={`text-xs font-bold ${shake.isShaking ? 'text-brand-700' : 'text-gray-400'}`}>
-                    {shake.magnitude.toFixed(1)}
-                  </p>
+            {/* Conditionally render: Active tracker or Trigger options */}
+            {activeEmergency ? (
+              <div className="card p-5 border-l-4 border-l-brand-600 bg-red-50/50 space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center animate-pulse">
+                    <Siren className="w-5 h-5 text-brand-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-sm">Emergency Assistance En Route</h3>
+                    <p className="text-xs text-gray-500 capitalize">Status: {activeEmergency.status}</p>
+                  </div>
                 </div>
-                <div className={`rounded-xl p-3 text-center ${shake.isStill ? 'bg-yellow-50' : 'bg-gray-50'}`}>
-                  <Shield className={`w-5 h-5 mx-auto mb-1 ${shake.isStill ? 'text-yellow-600' : 'text-gray-400'}`} />
-                  <p className="text-xs font-medium text-gray-600">Stillness</p>
-                  <p className={`text-xs font-bold ${shake.isStill ? 'text-yellow-700' : 'text-gray-400'}`}>
-                    {shake.stillnessDuration.toFixed(0)}s
-                  </p>
-                </div>
-                <div className={`rounded-xl p-3 text-center ${motionEnabled ? 'bg-green-50' : 'bg-gray-50'}`}>
-                  <Zap className={`w-5 h-5 mx-auto mb-1 ${motionEnabled ? 'text-green-600' : 'text-gray-400'}`} />
-                  <p className="text-xs font-medium text-gray-600">Motion</p>
-                  <p className={`text-xs font-bold ${motionEnabled ? 'text-green-700' : 'text-gray-400'}`}>
-                    {motionEnabled ? 'On' : 'Off'}
-                  </p>
-                </div>
-              </div>
-            </div>
 
-            {/* Manual SOS */}
-            <div className="card p-4 text-center">
-              <p className="text-sm text-gray-500 mb-4">
-                In danger? Press the SOS button or shake your phone 3 times.
-              </p>
-              <button
-                onClick={() => { setShakeMag(18); setDialogOpen(true); }}
-                className="relative inline-flex items-center justify-center w-32 h-32 rounded-full bg-brand-600 shadow-brand-lg active:scale-95 transition-transform mx-auto"
-              >
-                <span className="absolute inset-0 rounded-full bg-brand-600 animate-ping-slow opacity-30" />
-                <span className="absolute inset-3 rounded-full bg-brand-500" />
-                <div className="relative text-white text-center">
-                  <AlertTriangle className="w-8 h-8 mx-auto mb-0.5" />
-                  <span className="text-xs font-bold">SOS</span>
+                {dispatchedAmbulance ? (
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-bold text-gray-900">{dispatchedAmbulance.driverName}</p>
+                        <p className="text-xs text-gray-400">Driver ({dispatchedAmbulance.vehicleType})</p>
+                      </div>
+                      <span className="badge-red text-xs font-bold px-2.5 py-1 rounded-lg">
+                        {dispatchedAmbulance.vehicleNo}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <a href={`tel:${dispatchedAmbulance.phone}`} className="btn-primary py-2 text-xs flex-1 justify-center gap-1">
+                        <Phone className="w-3.5 h-3.5" /> Call Driver
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center py-6">
+                    <div className="flex justify-center gap-1.5 mb-2">
+                      {[0,1,2].map(i => (
+                        <div key={i} className="w-2.5 h-2.5 bg-brand-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 font-medium">Waiting for ambulance assignment…</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* Sensor Status Card */}
+                <div className="card p-4">
+                  <p className="section-title">Sensor Status</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className={`rounded-xl p-3 text-center ${shake.isShaking ? 'bg-brand-50' : 'bg-gray-50'}`}>
+                      <Activity className={`w-5 h-5 mx-auto mb-1 ${shake.isShaking ? 'text-brand-600 animate-pulse-fast' : 'text-gray-400'}`} />
+                      <p className="text-xs font-medium text-gray-600">Shake</p>
+                      <p className={`text-xs font-bold ${shake.isShaking ? 'text-brand-700' : 'text-gray-400'}`}>
+                        {shake.magnitude.toFixed(1)}
+                      </p>
+                    </div>
+                    <div className={`rounded-xl p-3 text-center ${shake.isStill ? 'bg-yellow-50' : 'bg-gray-50'}`}>
+                      <Shield className={`w-5 h-5 mx-auto mb-1 ${shake.isStill ? 'text-yellow-600' : 'text-gray-400'}`} />
+                      <p className="text-xs font-medium text-gray-600">Stillness</p>
+                      <p className={`text-xs font-bold ${shake.isStill ? 'text-yellow-700' : 'text-gray-400'}`}>
+                        {shake.stillnessDuration.toFixed(0)}s
+                      </p>
+                    </div>
+                    <div className={`rounded-xl p-3 text-center ${motionEnabled ? 'bg-green-50' : 'bg-gray-50'}`}>
+                      <Zap className={`w-5 h-5 mx-auto mb-1 ${motionEnabled ? 'text-green-600' : 'text-gray-400'}`} />
+                      <p className="text-xs font-medium text-gray-600">Motion</p>
+                      <p className={`text-xs font-bold ${motionEnabled ? 'text-green-700' : 'text-gray-400'}`}>
+                        {motionEnabled ? 'On' : 'Off'}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </button>
-              <p className="text-xs text-gray-400 mt-3">Tap to trigger emergency</p>
-            </div>
+
+                {/* Manual SOS */}
+                <div className="card p-4 text-center">
+                  <p className="text-sm text-gray-500 mb-4">
+                    In danger? Press the SOS button or shake your phone.
+                  </p>
+                  <button
+                    onClick={() => { setShakeMag(42); setDialogOpen(true); }}
+                    className="relative inline-flex items-center justify-center w-32 h-32 rounded-full bg-brand-600 shadow-brand-lg active:scale-95 transition-transform mx-auto"
+                  >
+                    <span className="absolute inset-0 rounded-full bg-brand-600 animate-ping-slow opacity-30" />
+                    <span className="absolute inset-3 rounded-full bg-brand-500" />
+                    <div className="relative text-white text-center">
+                      <AlertTriangle className="w-8 h-8 mx-auto mb-0.5" />
+                      <span className="text-xs font-bold">SOS</span>
+                    </div>
+                  </button>
+                  <p className="text-xs text-gray-400 mt-3">Tap to trigger emergency</p>
+                </div>
+              </>
+            )}
           </>
         )}
 

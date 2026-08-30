@@ -78,6 +78,13 @@ export default function HospitalDashboard() {
     return subscribeToHospitalAlerts(firebaseUser.uid, setAlerts);
   }, [firebaseUser?.uid]);
 
+  // Auto-switch to alerts tab when a new alert comes in for instant demo feedback
+  useEffect(() => {
+    if (alerts.length > 0) {
+      setTab('alerts');
+    }
+  }, [alerts.length]);
+
   const saveField = async (path: string, value: number) => {
     if (!firebaseUser?.uid) return;
     await updateDoc(doc(db, 'users', firebaseUser.uid), {
