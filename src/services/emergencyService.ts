@@ -3,10 +3,21 @@
 // ─────────────────────────────────────────────
 import {
   collection, doc, addDoc, updateDoc, onSnapshot,
-  query, where, orderBy, serverTimestamp, getDocs,
+  query, where, serverTimestamp, getDocs,
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import type { Emergency, HospitalAlert, AmbulanceProfile } from '../types';
+
+// Helper to safely get milliseconds from Firestore timestamp, number, or Date
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getTimestampMillis(val: any): number {
+  if (!val) return Date.now();
+  if (typeof val === 'number') return val;
+  if (typeof val.toMillis === 'function') return val.toMillis();
+  if (val.seconds !== undefined) return val.seconds * 1000;
+  const parsed = new Date(val).getTime();
+  return isNaN(parsed) ? Date.now() : parsed;
+}
 
 // ── Emergencies ───────────────────────────────
 export async function createEmergency(data: Omit<Emergency, 'id'>): Promise<string> {
@@ -24,19 +35,40 @@ export async function updateEmergency(id: string, data: Partial<Emergency>): Pro
 export function subscribeToEmergencies(
   callback: (emergencies: Emergency[]) => void,
 ) {
+  // FIX: Query without orderBy to prevent composite index requirement in Firestore
   const q = query(
     collection(db, 'emergencies'),
     where('status', 'in', ['triggered', 'confirmed', 'dispatched']),
-    orderBy('timestamp', 'desc'),
   );
   return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as Emergency)));
+    const list = snap.docs.map(d => {
+      const data = d.data();
+      return {
+        id: d.id,
+        ...data,
+        timestamp: getTimestampMillis(data.timestamp),
+      } as Emergency;
+    });
+    // Client-side sort by timestamp descending
+    list.sort((a, b) => b.timestamp - a.timestamp);
+    callback(list);
+  }, (error) => {
+    console.error("subscribeToEmergencies query error:", error);
   });
 }
 
 export function subscribeToEmergency(id: string, callback: (e: Emergency | null) => void) {
   return onSnapshot(doc(db, 'emergencies', id), (snap) => {
-    callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as Emergency) : null);
+    if (!snap.exists()) {
+      callback(null);
+      return;
+    }
+    const data = snap.data();
+    callback({
+      id: snap.id,
+      ...data,
+      timestamp: getTimestampMillis(data.timestamp),
+    } as Emergency);
   });
 }
 
@@ -84,12 +116,24 @@ export function subscribeToHospitalAlerts(
   hospitalId: string,
   callback: (alerts: HospitalAlert[]) => void,
 ) {
+  // FIX: Query without orderBy to prevent composite index requirement in Firestore
   const q = query(
     collection(db, 'hospital_alerts'),
     where('hospitalId', '==', hospitalId),
-    orderBy('timestamp', 'desc'),
   );
   return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as HospitalAlert)));
+    const list = snap.docs.map(d => {
+      const data = d.data();
+      return {
+        id: d.id,
+        ...data,
+        timestamp: getTimestampMillis(data.timestamp),
+      } as HospitalAlert;
+    });
+    // Client-side sort by timestamp descending
+    list.sort((a, b) => b.timestamp - a.timestamp);
+    callback(list);
+  }, (error) => {
+    console.error("subscribeToHospitalAlerts query error:", error);
   });
 }

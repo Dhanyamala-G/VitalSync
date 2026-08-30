@@ -78,6 +78,21 @@ export default function AmbulanceDashboard() {
     fetchHospitals().then(h => setHospitals(h as HospitalProfile[]));
   }, []);
 
+  // Sync active emergency with latest real-time updates from emergencies feed
+  useEffect(() => {
+    if (!activeEmerg) return;
+    const latest = emergencies.find(e => e.id === activeEmerg.id);
+    if (latest) {
+      if (
+        latest.location.lat !== activeEmerg.location.lat ||
+        latest.location.lng !== activeEmerg.location.lng ||
+        latest.status !== activeEmerg.status
+      ) {
+        setActiveEmerg(latest);
+      }
+    }
+  }, [emergencies, activeEmerg]);
+
   // ── AUTO-ARRIVAL DETECTION ─────────────────────────────────
   // When ambulance GPS is within 200 m of patient → auto-trigger
   useEffect(() => {

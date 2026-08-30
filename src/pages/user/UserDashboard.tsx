@@ -17,9 +17,9 @@ import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
-import { createEmergency, updateEmergency } from '../../services/emergencyService';
+import { createEmergency, updateEmergency, getTimestampMillis } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency } from '../../types';
-import { collection, onSnapshot, query, where, orderBy, limit } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
 const BLOOD_COLORS: Record<string, string> = {
@@ -68,16 +68,38 @@ export default function UserDashboard() {
     const q = query(
       collection(db, 'emergencies'),
       where('userId', '==', firebaseUser.uid),
-      orderBy('timestamp', 'desc'),
-      limit(10),
     );
     return onSnapshot(q, snap => {
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() } as Emergency));
-      setHistory(all);
+      const all = snap.docs.map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          timestamp: getTimestampMillis(data.timestamp),
+        } as Emergency;
+      });
+      // Sort client-side descending
+      all.sort((a, b) => b.timestamp - a.timestamp);
+      // Slice top 10 for history
+      const limited = all.slice(0, 10);
+      setHistory(limited);
+      
       const active = all.find(e => ['triggered','confirmed','dispatched'].includes(e.status));
       setActiveEmergency(active || null);
+    }, (error) => {
+      console.error("User history query error:", error);
     });
   }, [firebaseUser?.uid]);
+
+  // Dynamically update emergency location in Firestore as GPS changes
+  useEffect(() => {
+    if (!activeEmergency || !gps.location) return;
+    const prevLoc = activeEmergency.location;
+    const distanceShift = Math.abs(prevLoc.lat - gps.location.lat) + Math.abs(prevLoc.lng - gps.location.lng);
+    if (distanceShift > 0.00001) { // roughly 1 meter shift
+      updateEmergency(activeEmergency.id, { location: gps.location });
+    }
+  }, [gps.location, activeEmergency]);
 
   const handleAbort = () => setDialogOpen(false);
 
