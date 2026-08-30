@@ -26,7 +26,7 @@ export interface ShakeState {
 }
 
 // ── DEMO values ───────────────────────────────
-const SHAKE_THRESHOLD = 5;    // m/s² — pure acceleration, no gravity
+const SHAKE_THRESHOLD = 25;   // m/s² — hard deliberate shake needed
 const SHAKE_MIN_COUNT = 2;    // 2 rapid readings above threshold
 const STILL_THRESHOLD = 2.0;  // m/s² — below this = still
 const STILL_MIN_SEC   = 0.5;  // seconds of stillness to confirm
