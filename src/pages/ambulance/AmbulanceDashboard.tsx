@@ -55,6 +55,8 @@ export default function AmbulanceDashboard() {
   const siren  = useSirenAlarm();
   const voice  = useVoice(t => setVoiceNote(t));
 
+  const unassignedAlerts = emergencies.filter(e => ['confirmed', 'triggered'].includes(e.status));
+
   // Push ambulance GPS to Firestore every 10 s
   useEffect(() => {
     if (!firebaseUser?.uid || !gps.location) return;
@@ -67,7 +69,7 @@ export default function AmbulanceDashboard() {
       setEmergencies(list);
       
       if (!activeEmerg) {
-        const confirmed = list.find(e => e.status === 'confirmed');
+        const confirmed = list.find(e => ['confirmed', 'triggered'].includes(e.status));
         if (confirmed) {
           setIncomingAlert(confirmed);
           siren.play();
@@ -102,8 +104,23 @@ export default function AmbulanceDashboard() {
       ) {
         setActiveEmerg(latest);
       }
+    } else {
+      // Reset back to standby/available if the emergency is no longer active (aborted/resolved/arrived)
+      setActiveEmerg(null);
     }
   }, [emergencies, activeEmerg]);
+
+  // Auto-engage active mission on mount or reload if already dispatched to this ambulance
+  useEffect(() => {
+    if (!firebaseUser?.uid || activeEmerg) return;
+    const activeMission = emergencies.find(
+      e => e.ambulanceId === firebaseUser.uid && ['dispatched', 'confirmed'].includes(e.status)
+    );
+    if (activeMission) {
+      setActiveEmerg(activeMission);
+      setTab('map');
+    }
+  }, [emergencies, firebaseUser?.uid, activeEmerg]);
 
   // ── AUTO-ARRIVAL DETECTION ─────────────────────────────────
   // When ambulance GPS is within 200 m of patient → auto-trigger
@@ -215,8 +232,8 @@ export default function AmbulanceDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`badge ${emergencies.length > 0 ? 'badge-red animate-pulse' : 'badge-green'}`}>
-            {emergencies.length > 0 ? `${emergencies.length} Alert` : 'Standby'}
+          <span className={`badge ${unassignedAlerts.length > 0 ? 'badge-red animate-pulse' : 'badge-green'}`}>
+            {unassignedAlerts.length > 0 ? `${unassignedAlerts.length} Alert` : 'Standby'}
           </span>
           <button onClick={signOut} className="btn-ghost p-2"><LogOut className="w-4 h-4" /></button>
         </div>
@@ -289,12 +306,12 @@ export default function AmbulanceDashboard() {
             <div>
               <div className="flex items-center justify-between mb-3">
                 <p className="section-title mb-0">Live Alerts</p>
-                {emergencies.length > 0 && (
-                  <span className="badge-red animate-pulse">{emergencies.length} incoming</span>
+                {unassignedAlerts.length > 0 && (
+                  <span className="badge-red animate-pulse">{unassignedAlerts.length} incoming</span>
                 )}
               </div>
 
-              {emergencies.length === 0 ? (
+              {unassignedAlerts.length === 0 ? (
                 <div className="card p-8 text-center">
                   <Bell className="w-10 h-10 text-gray-200 mx-auto mb-3" />
                   <p className="text-gray-400 text-sm">No active alerts</p>
@@ -302,7 +319,7 @@ export default function AmbulanceDashboard() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {emergencies.map(e => (
+                  {unassignedAlerts.map(e => (
                     <motion.div key={e.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="alert-card">
                       <div className="flex items-start justify-between mb-3">
                         <div>
@@ -557,9 +574,9 @@ export default function AmbulanceDashboard() {
           <button onClick={() => setTab('alerts')} className={`nav-tab ${tab === 'alerts' ? 'active' : ''}`}>
             <Bell className="w-5 h-5" />
             <span>Alerts</span>
-            {emergencies.length > 0 && (
+            {unassignedAlerts.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-brand-600 text-white text-xs rounded-full flex items-center justify-center">
-                {emergencies.length}
+                {unassignedAlerts.length}
               </span>
             )}
           </button>

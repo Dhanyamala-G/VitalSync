@@ -5,7 +5,7 @@
 //  • Emergency dialog trigger
 //  • Emergency history
 // ─────────────────────────────────────────────
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
@@ -43,14 +43,56 @@ export default function UserDashboard() {
   const [tab,             setTab]             = useState<'home' | 'profile' | 'history'>('home');
 
   const gps = useGPS(true);
+  const pendingEmergencyIdRef = useRef<string | null>(null);
+
+  // Instantly start emergency trigger (writes status 'triggered' to Firestore to notify ambulance with 0 delay)
+  const startEmergencyTrigger = useCallback(async (initialMag: number) => {
+    if (activeEmergency || dialogOpen) return;
+    setShakeMag(initialMag);
+    setDialogOpen(true);
+
+    if (!firebaseUser) return;
+
+    const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
+
+    try {
+      const emergencyId = await createEmergency({
+        userId:       firebaseUser.uid,
+        userName:     user?.name || 'Unknown',
+        userPhone:    user?.phone || '',
+        userBloodGroup: user?.bloodGroup || 'Unknown',
+        location:     emergencyLoc,
+        status:       'triggered',
+        classification: 'HIGH',
+        confidenceScore: 0,
+        sensorData:   { maxShakeMagnitude: initialMag, stillnessDuration: 0, audioLevel: 0 },
+        timestamp:    Date.now(),
+      });
+
+      pendingEmergencyIdRef.current = emergencyId;
+
+      setActiveEmergency({
+        id: emergencyId,
+        userId: firebaseUser.uid,
+        userName: user?.name || 'Unknown',
+        userPhone: user?.phone || '',
+        userBloodGroup: user?.bloodGroup || 'Unknown',
+        location: emergencyLoc,
+        status: 'triggered',
+        classification: 'HIGH',
+        confidenceScore: 0,
+        sensorData: { maxShakeMagnitude: initialMag, stillnessDuration: 0, audioLevel: 0 },
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("Failed to pre-trigger emergency:", err);
+    }
+  }, [activeEmergency, dialogOpen, firebaseUser, gps.location, user]);
 
   // Shake handlers
   const handleShake = useCallback((mag: number) => {
-    if (!dialogOpen) {
-      setShakeMag(mag);
-      setDialogOpen(true);
-    }
-  }, [dialogOpen]);
+    startEmergencyTrigger(mag);
+  }, [startEmergencyTrigger]);
 
   const handleStillness = useCallback((_dur: number) => {
     // stillness signal noted — handled in dialog
@@ -122,42 +164,49 @@ export default function UserDashboard() {
     return subscribeToAmbulances(setAmbulances);
   }, []);
 
-  const handleAbort = () => setDialogOpen(false);
+  const handleAbort = useCallback(async () => {
+    setDialogOpen(false);
+    const id = activeEmergency?.id || pendingEmergencyIdRef.current;
+    if (id) {
+      await updateEmergency(id, { status: 'aborted' as const });
+    }
+    setActiveEmergency(null);
+    pendingEmergencyIdRef.current = null;
+  }, [activeEmergency]);
 
   const handleConfirmed = useCallback(async (result: AIAnalysisResult, sensor: SensorData) => {
     setDialogOpen(false);
-    if (!firebaseUser) return;
+    
+    const id = activeEmergency?.id || pendingEmergencyIdRef.current;
+    if (!id || !firebaseUser) return;
 
     // Use GPS location if available, otherwise fallback to mock Chennai location
     const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
 
-    const emergencyId = await createEmergency({
-      userId:       firebaseUser.uid,
-      userName:     user?.name || 'Unknown',
-      userPhone:    user?.phone || '',
-      userBloodGroup: user?.bloodGroup || 'Unknown',
-      location:     emergencyLoc,
-      status:       'confirmed',
-      classification: result.classification,
-      confidenceScore: result.confidenceScore,
-      sensorData:   sensor,
-      timestamp:    Date.now(),
-    });
-
-    setActiveEmergency({
-      id: emergencyId,
-      userId: firebaseUser.uid,
-      userName: user?.name || '',
-      userPhone: user?.phone || '',
-      userBloodGroup: user?.bloodGroup || '',
-      location: emergencyLoc,
-      status: 'confirmed',
+    const updateData = {
+      status: 'confirmed' as const,
       classification: result.classification,
       confidenceScore: result.confidenceScore,
       sensorData: sensor,
-      timestamp: Date.now(),
-    });
-  }, [firebaseUser, gps.location, user]);
+      location: emergencyLoc,
+    };
+
+    try {
+      await updateEmergency(id, updateData);
+
+      setActiveEmergency(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          ...updateData,
+        };
+      });
+    } catch (err) {
+      console.error("Failed to confirm emergency:", err);
+    }
+    
+    pendingEmergencyIdRef.current = null;
+  }, [activeEmergency, firebaseUser, gps.location]);
 
   const cancelEmergency = async () => {
     if (activeEmergency) {
@@ -280,7 +329,13 @@ export default function UserDashboard() {
                     label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
                     color: 'blue' as const,
                     pulse: true
-                  }] : [])
+                  }] : activeEmergency ? ambulances.filter(a => a.status === 'available' && a.location).map(a => ({
+                    lat: a.location!.lat,
+                    lng: a.location!.lng,
+                    label: `Available: ${a.vehicleNo} (${a.driverName})`,
+                    color: 'blue' as const,
+                    pulse: false
+                  })) : [])
                 ]}
               />
             )}
@@ -393,7 +448,7 @@ export default function UserDashboard() {
                     In danger? Press the SOS button or shake your phone.
                   </p>
                   <button
-                    onClick={() => { setShakeMag(42); setDialogOpen(true); }}
+                    onClick={() => { startEmergencyTrigger(42); }}
                     className="relative inline-flex items-center justify-center w-32 h-32 rounded-full bg-brand-600 shadow-brand-lg active:scale-95 transition-transform mx-auto"
                   >
                     <span className="absolute inset-0 rounded-full bg-brand-600 animate-ping-slow opacity-30" />
