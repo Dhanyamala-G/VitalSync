@@ -28,7 +28,7 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemi
 //  For production: remove the shake-auto-HIGH rule
 // ──────────────────────────────────────────────
 
-const SHAKE_BASE = 1.5;  // must match useShakeDetector threshold
+const SHAKE_BASE = 5;  // must match SHAKE_THRESHOLD in useShakeDetector.ts
 
 function computeLocalScore(sensor: SensorData): number {
   // If shake was detected → guaranteed 70 pts base score
