@@ -11,123 +11,125 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemi
 // ──────────────────────────────────────────────
 //  Emergency Confidence Scoring
 //
-//  🔧 DEMO MODE — Low thresholds, scores HIGH easily
+//  🔧 DEMO MODE — SHAKE = AUTOMATIC HIGH
 //
-//  Scoring breakdown:
-//    Shake magnitude  → max 45 pts  (starts at 3 m/s²)
-//    Stillness        → max 35 pts  (even 0.5s counts)
-//    Audio level      → max 15 pts
-//    Camera capture   → bonus 10 pts
+//  Rule:
+//    If shake threshold was crossed → always HIGH
+//    Audio + video are captured for ambulance info
+//    but they NEVER cause a LOW classification
 //
-//  Classification:
-//    HIGH if score ≥ 20  (was 65 — triggers from light shake)
-//    LOW  if score < 20
+//  Score shown to UI:
+//    Shake base:  70 pts guaranteed (shake triggered)
+//    Stillness:   +15 pts bonus
+//    Audio:       +10 pts bonus
+//    Camera:      +5  pts bonus
+//    Max: 100
 //
-//  For production: raise HIGH_THRESHOLD to 65 and
-//  change SHAKE_BASE to 15
+//  For production: remove the shake-auto-HIGH rule
 // ──────────────────────────────────────────────
 
-const SHAKE_BASE      = 3;   // m/s² — where scoring starts (matches hook)
-const HIGH_THRESHOLD  = 20;  // score needed to classify HIGH (was 65)
+const SHAKE_BASE = 1.5;  // must match useShakeDetector threshold
 
 function computeLocalScore(sensor: SensorData): number {
-  let score = 0;
-
-  // Shake magnitude contribution (max 45 pts)
-  // Any shake above SHAKE_BASE starts scoring immediately
+  // If shake was detected → guaranteed 70 pts base score
+  // This alone exceeds HIGH_THRESHOLD — shake = always HIGH
   if (sensor.maxShakeMagnitude > SHAKE_BASE) {
-    const shakePts = Math.min(45, ((sensor.maxShakeMagnitude - SHAKE_BASE) / 10) * 45);
-    score += Math.max(12, shakePts); // guaranteed 12 pts if threshold crossed
+    let score = 70; // shake base — always HIGH on its own
+
+    // Stillness bonus (max +15 pts)
+    if (sensor.stillnessDuration > 0) {
+      score += Math.min(15, (sensor.stillnessDuration / 2) * 15);
+    }
+
+    // Audio bonus (max +10 pts) — high audio = more distress
+    if (sensor.audioLevel > 0) {
+      score += Math.round(sensor.audioLevel * 10);
+    }
+
+    // Camera captured (bonus +5 pts)
+    if (sensor.cameraCapture) score += 5;
+
+    return Math.min(100, Math.round(score));
   }
 
-  // Stillness after shake (max 35 pts)
-  // Even a brief 0.5s stillness contributes
-  if (sensor.stillnessDuration > 0) {
-    const stillPts = Math.min(35, (sensor.stillnessDuration / 3) * 35);
-    score += Math.max(stillPts, sensor.stillnessDuration > 0 ? 10 : 0);
-  }
-
-  // Audio level (max 15 pts)
-  if (sensor.audioLevel > 0) {
-    score += sensor.audioLevel * 15;
-  }
-
-  // Camera detected (bonus 10 pts)
-  if (sensor.cameraCapture) score += 10;
-
-  return Math.min(100, Math.round(score));
+  // No shake detected → low score
+  return 5;
 }
 
 export async function analyseEmergency(sensor: SensorData): Promise<AIAnalysisResult> {
-  // Try Gemini first if API key available
-  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_KEY') {
-    try {
-      const parts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [
-        {
-          text: `You are an emergency detection AI. Analyse the following sensor data and classify the emergency.
+  // ── SHAKE DETECTED → ALWAYS HIGH ────────────
+  // Audio/video are captured for ambulance context
+  // but shake alone is definitive evidence
+  if (sensor.maxShakeMagnitude > SHAKE_BASE) {
+    const score = computeLocalScore(sensor);
 
-Sensor Data:
-- Max shake magnitude: ${sensor.maxShakeMagnitude.toFixed(2)} m/s² (demo threshold: ${SHAKE_BASE} m/s²)
-- Stillness duration after shake: ${sensor.stillnessDuration.toFixed(1)} seconds
-- Audio level: ${(sensor.audioLevel * 100).toFixed(0)}%
-- Camera capture: ${sensor.cameraCapture ? 'Available' : 'Not available'}
+    // If Gemini API key is available, send data for richer reasoning text
+    // but we KEEP classification as HIGH regardless of what Gemini says
+    let reasoning = `🚨 Emergency shake detected (${sensor.maxShakeMagnitude.toFixed(1)} m/s²).`;
 
-Analyse the video frame (if provided), audio level, and movement pattern.
-Look for: signs of distress in the image, unusual body position, high audio indicating distress.
+    if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_KEY') {
+      try {
+        const parts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [
+          {
+            text: `Emergency alert triggered by device shake (${sensor.maxShakeMagnitude.toFixed(1)} m/s²).
+Stillness after shake: ${sensor.stillnessDuration.toFixed(1)}s.
+Audio level: ${(sensor.audioLevel * 100).toFixed(0)}%.
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "classification": "HIGH" or "LOW",
-  "confidenceScore": <0-100>,
-  "reasoning": "<one sentence explanation>"
-}
-
-HIGH = likely real emergency (accident/medical crisis). LOW = likely false alarm.`,
-        },
-      ];
-
-      if (sensor.cameraCapture) {
-        parts.push({
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: sensor.cameraCapture.replace(/^data:image\/\w+;base64,/, ''),
+The emergency IS confirmed (shake detected). Do NOT change the classification to LOW.
+Briefly describe what the camera image shows (if provided) in one sentence to help paramedics.
+Respond ONLY in this JSON format:
+{ "reasoning": "<one sentence describing scene for paramedics>" }`,
           },
+        ];
+
+        if (sensor.cameraCapture) {
+          parts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: sensor.cameraCapture.replace(/^data:image\/\w+;base64,/, ''),
+            },
+          });
+        }
+
+        const response = await fetch(GEMINI_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts }] }),
         });
-      }
 
-      const response = await fetch(GEMINI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] }),
-      });
-
-      const data = await response.json();
-      const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          classification:  parsed.classification  || 'LOW',
-          confidenceScore: parsed.confidenceScore || 0,
-          reasoning:       parsed.reasoning       || '',
-          timestamp:       Date.now(),
-        };
+        const data = await response.json();
+        const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.reasoning) reasoning = parsed.reasoning;
+        }
+      } catch {
+        // Keep default reasoning
       }
-    } catch {
-      // Fallback to local scoring
+    } else {
+      // Build descriptive reasoning from sensor data
+      const parts: string[] = [`Shake detected (${sensor.maxShakeMagnitude.toFixed(1)} m/s²)`];
+      if (sensor.stillnessDuration > 0.5) parts.push(`device went still for ${sensor.stillnessDuration.toFixed(1)}s`);
+      if (sensor.audioLevel > 0.3) parts.push(`elevated audio detected`);
+      if (sensor.cameraCapture) parts.push(`scene captured`);
+      reasoning = `🚨 ${parts.join(', ')}.`;
     }
+
+    return {
+      classification:  'HIGH',   // always HIGH if shake triggered
+      confidenceScore: score,
+      reasoning,
+      timestamp: Date.now(),
+    };
   }
 
-  // ── Local threshold-based fallback ──────────
-  const score = computeLocalScore(sensor);
+  // ── No shake — LOW ───────────────────────────
   return {
-    classification:  score >= HIGH_THRESHOLD ? 'HIGH' : 'LOW',
-    confidenceScore: score,
-    reasoning:
-      score >= HIGH_THRESHOLD
-        ? `Emergency detected: shake ${sensor.maxShakeMagnitude.toFixed(1)} m/s², ${sensor.stillnessDuration.toFixed(1)}s stillness, audio ${(sensor.audioLevel * 100).toFixed(0)}%.`
-        : `Low confidence: readings below emergency threshold (score: ${score}/100).`,
-    timestamp: Date.now(),
+    classification:  'LOW',
+    confidenceScore: 5,
+    reasoning:       'No significant shake detected — likely a false trigger.',
+    timestamp:       Date.now(),
   };
 }
 

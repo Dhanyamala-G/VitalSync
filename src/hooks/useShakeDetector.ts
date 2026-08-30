@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────
 //  useShakeDetector — Accelerometer Hook
 //
-//  🔧 DEMO MODE — Low thresholds for easy testing
-//  Shake threshold : 3 m/s²  (a gentle quick shake)
-//  Min readings    : 2        (near-instant trigger)
-//  Stillness       : < 2.5 m/s² for 1 second
+//  🔧 DEMO MODE — Ultra-sensitive
+//  Shake threshold : 1.5 m/s²  (barely any movement)
+//  Min readings    : 1          (single reading triggers)
+//  Stillness       : < 3 m/s² for 0.5s
 //
-//  For production, raise SHAKE_THRESHOLD to 15
+//  For production: SHAKE_THRESHOLD=15, SHAKE_MIN_COUNT=3
 // ─────────────────────────────────────────────
 import { useEffect, useRef, useCallback, useState } from 'react';
 
@@ -20,11 +20,11 @@ export interface ShakeState {
   requestPermission: () => Promise<boolean>;
 }
 
-// ── DEMO values — change for production ───────
-const SHAKE_THRESHOLD  = 3;    // m/s²  (was 15 — very sensitive now)
-const SHAKE_MIN_COUNT  = 2;    // readings (was 3 — triggers faster)
-const STILL_THRESHOLD  = 2.5;  // m/s²  (was 1.5 — easier to trigger)
-const STILL_MIN_SEC    = 1;    // seconds (was 3 — triggers in 1s)
+// ── DEMO values — ultra-sensitive ─────────────
+const SHAKE_THRESHOLD  = 1.5;  // m/s²  (single light flick triggers)
+const SHAKE_MIN_COUNT  = 1;    // 1 reading is enough
+const STILL_THRESHOLD  = 3.0;  // m/s²  (generous — easy to go still)
+const STILL_MIN_SEC    = 0.5;  // seconds (half second of stillness)
 
 export function useShakeDetector(
   onShake: (maxMagnitude: number) => void,
