@@ -17,7 +17,7 @@ import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
-import { createEmergency, updateEmergency, getTimestampMillis } from '../../services/emergencyService';
+import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
 import { collection, onSnapshot, query, doc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -37,6 +37,7 @@ export default function UserDashboard() {
   const [shakeMag,        setShakeMag]        = useState(0);
   const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
   const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
+  const [ambulances,      setAmbulances]      = useState<AmbulanceProfile[]>([]);
   const [history,         setHistory]         = useState<Emergency[]>([]);
   const [motionEnabled,   setMotionEnabled]   = useState(false);
   const [tab,             setTab]             = useState<'home' | 'profile' | 'history'>('home');
@@ -115,6 +116,11 @@ export default function UserDashboard() {
       }
     });
   }, [activeEmergency?.ambulanceId]);
+
+  // Listen to all ambulances to show standby list
+  useEffect(() => {
+    return subscribeToAmbulances(setAmbulances);
+  }, []);
 
   const handleAbort = () => setDialogOpen(false);
 
@@ -311,13 +317,43 @@ export default function UserDashboard() {
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center py-6">
-                    <div className="flex justify-center gap-1.5 mb-2">
-                      {[0,1,2].map(i => (
-                        <div key={i} className="w-2.5 h-2.5 bg-brand-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
-                      ))}
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                        Available Ambulances Nearby
+                      </p>
+                      <span className="flex h-2 w-2 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                      </span>
                     </div>
-                    <p className="text-xs text-gray-500 font-medium">Waiting for ambulance assignment…</p>
+
+                    {ambulances.filter(a => a.status === 'available').length === 0 ? (
+                      <div className="text-center py-4">
+                        <div className="flex justify-center gap-1.5 mb-2">
+                          {[0,1,2].map(i => (
+                            <div key={i} className="w-2 h-2 bg-brand-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-400 font-medium">Alerting local dispatch hubs…</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {ambulances.filter(a => a.status === 'available').map(a => (
+                          <div key={a.uid} className="flex items-center justify-between bg-gray-50 p-2.5 rounded-xl border border-gray-100/50">
+                            <div>
+                              <p className="text-xs font-extrabold text-gray-800">{a.vehicleNo}</p>
+                              <p className="text-[10px] text-gray-500 font-medium">
+                                Type: {a.vehicleType} • Driver: {a.driverName}
+                              </p>
+                            </div>
+                            <span className="text-[9px] bg-green-100 text-green-700 font-bold px-2 py-0.5 rounded">
+                              Standby
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

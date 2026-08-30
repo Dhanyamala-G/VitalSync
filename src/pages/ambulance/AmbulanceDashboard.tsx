@@ -38,6 +38,7 @@ export default function AmbulanceDashboard() {
   const [tab,             setTab]             = useState<'alerts' | 'map' | 'hospital'>('alerts');
   const [emergencies,     setEmergencies]     = useState<Emergency[]>([]);
   const [activeEmerg,     setActiveEmerg]     = useState<Emergency | null>(null);
+  const [incomingAlert,   setIncomingAlert]   = useState<Emergency | null>(null);
   const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
   const [recommendations, setRecommendations] = useState<HospitalRecommendation[]>([]);
   const [voiceNote,       setVoiceNote]       = useState('');
@@ -60,18 +61,29 @@ export default function AmbulanceDashboard() {
     updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
   }, [firebaseUser?.uid, gps.location]);
 
-  // Real-time emergency feed + siren
+  // Real-time emergency feed + siren + popup trigger
   useEffect(() => {
     return subscribeToEmergencies(list => {
       setEmergencies(list);
-      if (list.length > prevCountRef.current) {
-        const fresh = list.slice(0, list.length - prevCountRef.current);
-        if (fresh.some(e => e.classification === 'HIGH')) siren.play();
+      
+      if (!activeEmerg) {
+        const confirmed = list.find(e => e.status === 'confirmed');
+        if (confirmed) {
+          setIncomingAlert(confirmed);
+          siren.play();
+        } else {
+          setIncomingAlert(null);
+          siren.stop();
+        }
+      } else {
+        setIncomingAlert(null);
+        siren.stop();
       }
+      
       prevCountRef.current = list.length;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeEmerg]);
 
   // Fetch hospitals once
   useEffect(() => {
@@ -564,6 +576,79 @@ export default function AmbulanceDashboard() {
           </button>
         </div>
       </nav>
+
+      {/* Visual Incoming Alert Pop-up Modal */}
+      <AnimatePresence>
+        {incomingAlert && !activeEmerg && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.8)' }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-brand-500"
+            >
+              <div className="bg-brand-600 p-5 text-white flex items-center gap-3">
+                <motion.div animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }}>
+                  <AlertTriangle className="w-8 h-8 text-white fill-white/20" />
+                </motion.div>
+                <div>
+                  <h2 className="font-black text-lg tracking-tight">NEW EMERGENCY ALERT</h2>
+                  <p className="text-xs text-red-100 font-medium">Immediate dispatch requested</p>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-brand-50 rounded-2xl p-4 border border-brand-100 text-center">
+                  <span className="badge-red text-xs font-bold mb-1">HIGH CONFIDENCE</span>
+                  <p className="text-xl font-black text-gray-900">{incomingAlert.userName}</p>
+                  <p className="text-xs text-gray-500 mt-1">{incomingAlert.userBloodGroup} Blood · {incomingAlert.userPhone}</p>
+                </div>
+
+                <div className="space-y-2.5 text-sm text-gray-600">
+                  <div className="flex justify-between">
+                    <span className="font-semibold">AI Confidence:</span>
+                    <span className="font-bold text-brand-600">{incomingAlert.confidenceScore}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-semibold">Max Shake:</span>
+                    <span className="font-bold text-gray-800">{incomingAlert.sensorData?.maxShakeMagnitude.toFixed(1)} m/s²</span>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 text-xs italic">
+                    "{incomingAlert.sensorData?.stillnessDuration.toFixed(1)}s stillness. Camera & audio feeds transmitted."
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      declineEmergency(incomingAlert);
+                      setIncomingAlert(null);
+                    }}
+                    className="btn-secondary flex-1 py-3 text-sm font-bold"
+                  >
+                    Decline
+                  </button>
+                  <button
+                    onClick={() => {
+                      acceptEmergency(incomingAlert);
+                      setIncomingAlert(null);
+                    }}
+                    className="btn-primary flex-1 py-3 text-sm font-bold"
+                  >
+                    Accept Alert
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
