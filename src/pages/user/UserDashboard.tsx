@@ -19,7 +19,7 @@ import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
 import { createEmergency, updateEmergency, getTimestampMillis } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency } from '../../types';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
 const BLOOD_COLORS: Record<string, string> = {
@@ -65,19 +65,20 @@ export default function UserDashboard() {
   // Listen to emergency history
   useEffect(() => {
     if (!firebaseUser?.uid) return;
-    const q = query(
-      collection(db, 'emergencies'),
-      where('userId', '==', firebaseUser.uid),
-    );
+    // BULLETPROOF: Query all emergencies and filter client-side to bypass all index limits
+    const q = query(collection(db, 'emergencies'));
     return onSnapshot(q, snap => {
-      const all = snap.docs.map(d => {
-        const data = d.data();
-        return {
-          id: d.id,
-          ...data,
-          timestamp: getTimestampMillis(data.timestamp),
-        } as Emergency;
-      });
+      const all = snap.docs
+        .map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            ...data,
+            timestamp: getTimestampMillis(data.timestamp),
+          } as Emergency;
+        })
+        .filter(e => e.userId === firebaseUser.uid);
+
       // Sort client-side descending
       all.sort((a, b) => b.timestamp - a.timestamp);
       // Slice top 10 for history

@@ -35,21 +35,21 @@ export async function updateEmergency(id: string, data: Partial<Emergency>): Pro
 export function subscribeToEmergencies(
   callback: (emergencies: Emergency[]) => void,
 ) {
-  // FIX: Query without orderBy to prevent composite index requirement in Firestore
-  const q = query(
-    collection(db, 'emergencies'),
-    where('status', 'in', ['triggered', 'confirmed', 'dispatched']),
-  );
+  // BULLETPROOF: Query all and filter client-side to bypass all Firestore index limits
+  const q = query(collection(db, 'emergencies'));
   return onSnapshot(q, (snap) => {
-    const list = snap.docs.map(d => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        timestamp: getTimestampMillis(data.timestamp),
-      } as Emergency;
-    });
-    // Client-side sort by timestamp descending
+    const list = snap.docs
+      .map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          timestamp: getTimestampMillis(data.timestamp),
+        } as Emergency;
+      })
+      .filter(e => ['triggered', 'confirmed', 'dispatched'].includes(e.status));
+      
+    // Sort by timestamp descending
     list.sort((a, b) => b.timestamp - a.timestamp);
     callback(list);
   }, (error) => {
@@ -116,21 +116,21 @@ export function subscribeToHospitalAlerts(
   hospitalId: string,
   callback: (alerts: HospitalAlert[]) => void,
 ) {
-  // FIX: Query without orderBy to prevent composite index requirement in Firestore
-  const q = query(
-    collection(db, 'hospital_alerts'),
-    where('hospitalId', '==', hospitalId),
-  );
+  // BULLETPROOF: Query all and filter client-side to bypass all Firestore index limits
+  const q = query(collection(db, 'hospital_alerts'));
   return onSnapshot(q, (snap) => {
-    const list = snap.docs.map(d => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        timestamp: getTimestampMillis(data.timestamp),
-      } as HospitalAlert;
-    });
-    // Client-side sort by timestamp descending
+    const list = snap.docs
+      .map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          timestamp: getTimestampMillis(data.timestamp),
+        } as HospitalAlert;
+      })
+      .filter(a => a.hospitalId === hospitalId);
+      
+    // Sort by timestamp descending
     list.sort((a, b) => b.timestamp - a.timestamp);
     callback(list);
   }, (error) => {
