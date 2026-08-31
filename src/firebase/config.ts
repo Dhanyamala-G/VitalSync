@@ -23,6 +23,18 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID             || 'YOUR_APP_ID',
 };
 
+// Safe diagnostic logging to troubleshoot Vercel deployment variable injection
+const apiKeyVal = firebaseConfig.apiKey;
+console.log("Firebase Init Diagnostics:");
+console.log("  - API Key loaded:", apiKeyVal !== 'YOUR_API_KEY' && !!apiKeyVal);
+if (apiKeyVal && apiKeyVal !== 'YOUR_API_KEY') {
+  console.log("  - API Key starts with:", apiKeyVal.substring(0, 6));
+  console.log("  - API Key ends with:", apiKeyVal.substring(apiKeyVal.length - 4));
+  console.log("  - API Key length:", apiKeyVal.length);
+} else {
+  console.warn("  - API Key is fallback 'YOUR_API_KEY' or empty!");
+}
+
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
