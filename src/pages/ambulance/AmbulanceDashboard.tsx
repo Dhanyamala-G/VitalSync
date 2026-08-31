@@ -542,7 +542,7 @@ export default function AmbulanceDashboard() {
                 {bestHosp && (
                   <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
                     <MapView
-                      center={gps.location || { lat: 0, lng: 0 }}
+                      center={gps.location || bestHosp.hospital.location || activeEmerg?.location || { lat: 13.0627, lng: 80.2545 }}
                       markers={mapMarkers}
                       height="200px"
                       zoom={13}
