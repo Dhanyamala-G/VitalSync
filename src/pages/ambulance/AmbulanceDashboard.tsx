@@ -385,7 +385,7 @@ export default function AmbulanceDashboard() {
                     </div>
                   )}
                 </div>
-                <MapView center={gps.location || activeEmerg.location} markers={mapMarkers} height="320px" zoom={14} />
+                <MapView center={gps.location || activeEmerg.location} showRoute={true} markers={mapMarkers} height="320px" zoom={14} />
                 <div className="mt-3 bg-green-50 rounded-xl p-3 flex items-center gap-2">
                   <Target className="w-4 h-4 text-green-600" />
                   <p className="text-xs text-green-700 font-medium">
@@ -490,7 +490,8 @@ export default function AmbulanceDashboard() {
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
                           transition={{ delay: idx * 0.08 }}
-                          className={`rounded-2xl border-2 p-4 ${
+                          onClick={() => setBestHosp(rec)}
+                          className={`rounded-2xl border-2 p-4 cursor-pointer hover:border-brand-300 transition-colors ${
                             bestHosp?.hospital.uid === rec.hospital.uid
                               ? 'border-brand-600 bg-brand-50 shadow-brand'
                               : 'border-gray-100 bg-white'
@@ -546,6 +547,7 @@ export default function AmbulanceDashboard() {
                   <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
                     <MapView
                       center={gps.location || bestHosp.hospital.location || activeEmerg?.location || { lat: 13.0627, lng: 80.2545 }}
+                      showRoute={true}
                       markers={mapMarkers}
                       height="200px"
                       zoom={13}

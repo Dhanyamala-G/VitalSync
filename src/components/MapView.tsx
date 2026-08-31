@@ -28,6 +28,7 @@ interface Props {
   markers?:   MapMarker[];
   height?:    string;
   className?: string;
+  showRoute?: boolean;
 }
 
 function makeIcon(color: string, pulse: boolean): L.DivIcon {
@@ -58,7 +59,7 @@ const COLOR_MAP: Record<string, string> = {
   orange: '#D97706',
 };
 
-export default function MapView({ center, zoom = 14, markers = [], height = '240px', className = '' }: Props) {
+export default function MapView({ center, zoom = 14, markers = [], height = '240px', className = '', showRoute = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef       = useRef<L.Map | null>(null);
 
@@ -92,7 +93,12 @@ export default function MapView({ center, zoom = 14, markers = [], height = '240
     const map = mapRef.current;
     if (!map) return;
 
-    map.eachLayer(l => { if (l instanceof L.Marker) map.removeLayer(l); });
+    map.eachLayer(l => { 
+      if (l instanceof L.Marker || (l instanceof L.Polyline && !(l instanceof L.Polygon))) {
+        map.removeLayer(l); 
+      }
+    });
+
     markers.forEach(m => {
       const hexColor = COLOR_MAP[m.color || 'red'];
       const icon     = makeIcon(hexColor, m.pulse || false);
@@ -100,7 +106,18 @@ export default function MapView({ center, zoom = 14, markers = [], height = '240
         .bindPopup(`<b style="color:${hexColor}">${m.label}</b>`)
         .addTo(map);
     });
-  }, [markers]);
+
+    if (showRoute && markers.length >= 2) {
+      const latlngs = markers.map(m => [m.lat, m.lng] as L.LatLngExpression);
+      L.polyline(latlngs, {
+        color: '#2563EB',
+        weight: 5,
+        opacity: 0.8,
+        dashArray: '8, 8',
+        lineJoin: 'round',
+      }).addTo(map);
+    }
+  }, [markers, showRoute]);
 
   return (
     <div

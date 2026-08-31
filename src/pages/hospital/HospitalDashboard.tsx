@@ -12,11 +12,12 @@ import {
   Check, X, Phone, MapPin, Activity,
   Heart, Stethoscope, ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuthStore } from '../../store/useAuthStore';
 import { subscribeToHospitalAlerts } from '../../services/emergencyService';
-import type { HospitalProfile, HospitalAlert, BloodBank } from '../../types';
+import type { HospitalProfile, HospitalAlert, BloodBank, Emergency, AmbulanceProfile, UserProfile } from '../../types';
+import MapView from '../../components/MapView';
 
 const BLOOD_TYPES = ['Apos','Aneg','Bpos','Bneg','Opos','Oneg','ABpos','ABneg'] as const;
 const BLOOD_LABELS: Record<string, string> = {
@@ -70,6 +71,54 @@ export default function HospitalDashboard() {
   const [alerts,       setAlerts]       = useState<HospitalAlert[]>([]);
   const [expandedBed,  setExpandedBed]  = useState(false);
   const [localStats,   setLocalStats]   = useState<HospitalProfile | null>(null);
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
+  const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
+  const [ambulanceProfile, setAmbulanceProfile] = useState<AmbulanceProfile | null>(null);
+  const [patientProfile, setPatientProfile] = useState<UserProfile | null>(null);
+
+  // Listen to the selected alert's emergency and ambulance details in real-time
+  useEffect(() => {
+    if (!selectedAlertId) {
+      setActiveEmergency(null);
+      setAmbulanceProfile(null);
+      setPatientProfile(null);
+      return;
+    }
+    const alert = alerts.find(a => a.id === selectedAlertId);
+    if (!alert) return;
+
+    // Listen to emergency doc
+    const unsubEmergency = onSnapshot(doc(db, 'emergencies', alert.emergencyId), (snap) => {
+      if (snap.exists()) {
+        setActiveEmergency({ id: snap.id, ...snap.data() } as Emergency);
+      }
+    });
+
+    // Listen to ambulance doc
+    const unsubAmbulance = onSnapshot(doc(db, 'users', alert.ambulanceId), (snap) => {
+      if (snap.exists()) {
+        setAmbulanceProfile({ uid: snap.id, ...snap.data() } as AmbulanceProfile);
+      }
+    });
+
+    return () => {
+      unsubEmergency();
+      unsubAmbulance();
+    };
+  }, [selectedAlertId, alerts]);
+
+  // Listen to the patient's full medical profile if it is a personal run
+  useEffect(() => {
+    if (!activeEmergency || activeEmergency.userId.startsWith('bystander_')) {
+      setPatientProfile(null);
+      return;
+    }
+    return onSnapshot(doc(db, 'users', activeEmergency.userId), (snap) => {
+      if (snap.exists()) {
+        setPatientProfile({ uid: snap.id, ...snap.data() } as UserProfile);
+      }
+    });
+  }, [activeEmergency]);
 
   useEffect(() => { setLocalStats(hosp); }, [hosp]);
 
@@ -354,8 +403,11 @@ export default function HospitalDashboard() {
                     key={alert.id}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
-                    className={`rounded-2xl border-l-4 border-gray-100 bg-white shadow-card p-4 ${
-                      alert.status === 'en_route' ? 'border-l-brand-600' : 'border-l-green-500'
+                    onClick={() => setSelectedAlertId(selectedAlertId === alert.id ? null : alert.id)}
+                    className={`rounded-2xl border-l-4 bg-white shadow-card p-4 cursor-pointer hover:border-brand-300 transition-all ${
+                      selectedAlertId === alert.id
+                        ? 'border-l-brand-600 shadow-md ring-1 ring-brand-200/50'
+                        : alert.status === 'en_route' ? 'border-l-brand-600/70 border-gray-100' : 'border-l-green-500 border-gray-100'
                     }`}
                   >
                     <div className="flex items-start justify-between mb-3">
@@ -389,7 +441,9 @@ export default function HospitalDashboard() {
                         <MapPin className="w-4 h-4 text-brand-600" />
                         <div>
                           <p className="text-xs font-medium text-gray-700">Distance</p>
-                          <p className="text-xs text-gray-400">Tracking live</p>
+                          <p className="text-xs text-gray-400">
+                            {selectedAlertId === alert.id ? "Tracking Active" : "Click to track"}
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -400,6 +454,144 @@ export default function HospitalDashboard() {
                         <div>
                           <p className="text-xs font-semibold text-brand-700 mb-0.5">Paramedic Update</p>
                           <p className="text-sm text-gray-700 italic">"{alert.condition}"</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedAlertId === alert.id && (
+                      <div className="mt-4 pt-4 border-t border-gray-100 space-y-4" onClick={e => e.stopPropagation()}>
+                        {/* Live Map Tracker */}
+                        {((ambulanceProfile?.location) || (activeEmergency?.location) || (localStats?.location)) && (
+                          <div>
+                            <p className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wider">
+                              Live Route Tracking
+                            </p>
+                            <MapView
+                              center={ambulanceProfile?.location || activeEmergency?.location || localStats!.location}
+                              showRoute={true}
+                              zoom={13}
+                              height="200px"
+                              markers={[
+                                ...(ambulanceProfile?.location ? [{
+                                  lat: ambulanceProfile.location.lat,
+                                  lng: ambulanceProfile.location.lng,
+                                  label: `Ambulance (${ambulanceProfile.vehicleNo})`,
+                                  color: 'blue' as const,
+                                  pulse: true
+                                }] : []),
+                                ...(activeEmergency?.location ? [{
+                                  lat: activeEmergency.location.lat,
+                                  lng: activeEmergency.location.lng,
+                                  label: `Patient Location`,
+                                  color: 'red' as const,
+                                  pulse: true
+                                }] : []),
+                                ...(localStats?.location ? [{
+                                  lat: localStats.location.lat,
+                                  lng: localStats.location.lng,
+                                  label: localStats.name,
+                                  color: 'green' as const
+                                }] : [])
+                              ]}
+                            />
+                          </div>
+                        )}
+
+                        {/* Patient Medical Details */}
+                        <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                            Patient Medical Profile
+                          </p>
+
+                          {activeEmergency?.userId.startsWith('bystander_') ? (
+                            <div className="space-y-2">
+                              <span className="badge-yellow text-xs font-bold">Anonymous Bystander Mode</span>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <p className="text-gray-400">Name</p>
+                                  <p className="font-semibold text-gray-700">Anonymous Bystander (Reported)</p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-400">Phone</p>
+                                  <p className="font-semibold text-gray-700">Hidden for Privacy</p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-400">Blood Group</p>
+                                  <p className="font-semibold text-gray-700">N/A</p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-400">Severity</p>
+                                  <p className="font-semibold text-red-600">HIGH (Bystander Confirmed)</p>
+                                </div>
+                              </div>
+                            </div>
+                          ) : activeEmergency ? (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-3 gap-2 text-xs">
+                                <div>
+                                  <p className="text-gray-400">Name</p>
+                                  <p className="font-bold text-gray-800">{activeEmergency.userName}</p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-400">Phone</p>
+                                  <a href={`tel:${activeEmergency.userPhone}`} className="font-bold text-brand-600 underline">
+                                    {activeEmergency.userPhone}
+                                  </a>
+                                </div>
+                                <div>
+                                  <p className="text-gray-400">Blood Group</p>
+                                  <span className="badge-red text-[10px] font-bold px-2 py-0.5 rounded">
+                                    {activeEmergency.userBloodGroup}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {patientProfile && (
+                                <div className="space-y-2.5 pt-2 border-t border-gray-200/50">
+                                  {patientProfile.conditions?.length > 0 && (
+                                    <div>
+                                      <p className="text-[10px] font-bold text-gray-400">Conditions</p>
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {patientProfile.conditions.map(c => (
+                                          <span key={c} className="text-[10px] bg-red-50 text-red-600 font-medium px-2 py-0.5 rounded-full">
+                                            {c}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {patientProfile.allergies?.length > 0 && (
+                                    <div>
+                                      <p className="text-[10px] font-bold text-gray-400">Allergies</p>
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {patientProfile.allergies.map(a => (
+                                          <span key={a} className="text-[10px] bg-yellow-50 text-yellow-700 font-medium px-2 py-0.5 rounded-full">
+                                            {a}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {patientProfile.medications?.length > 0 && (
+                                    <div>
+                                      <p className="text-[10px] font-bold text-gray-400">Medications</p>
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {patientProfile.medications.map(m => (
+                                          <span key={m} className="text-[10px] bg-blue-50 text-blue-600 font-medium px-2 py-0.5 rounded-full">
+                                            {m}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-400">Loading details…</p>
+                          )}
                         </div>
                       </div>
                     )}

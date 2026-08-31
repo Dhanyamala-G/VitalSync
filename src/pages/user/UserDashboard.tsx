@@ -383,6 +383,7 @@ export default function UserDashboard() {
             {(gps.location || activeEmergency?.location) && (
               <MapView
                 center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
+                showRoute={!!dispatchedAmbulance}
                 markers={[
                   { 
                     lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
@@ -485,7 +486,7 @@ export default function UserDashboard() {
                 )}
 
                 <button onClick={cancelEmergency} className="btn-secondary w-full py-3 text-sm font-bold border-orange-200 text-orange-700 hover:bg-orange-50">
-                  Decline Ambulance
+                  Cancel Emergency Alert
                 </button>
               </div>
             ) : (
@@ -547,6 +548,7 @@ export default function UserDashboard() {
                 {(gps.location || activeEmergency?.location) && (
                   <MapView
                     center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
+                    showRoute={!!dispatchedAmbulance}
                     markers={[
                       { 
                         lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
