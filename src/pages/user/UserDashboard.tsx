@@ -163,7 +163,7 @@ export default function UserDashboard() {
             timestamp: getTimestampMillis(data.timestamp),
           } as Emergency;
         })
-        .filter(e => e.userId === firebaseUser.uid);
+        .filter(e => e.userId === firebaseUser.uid || e.userId === `bystander_${firebaseUser.uid}`);
 
       // Sort client-side descending
       all.sort((a, b) => b.timestamp - a.timestamp);
@@ -173,6 +173,9 @@ export default function UserDashboard() {
       
       const active = all.find(e => ['triggered','confirmed','dispatched'].includes(e.status));
       setActiveEmergency(active || null);
+      if (active && active.userId.startsWith('bystander_')) {
+        setBystanderMode(true);
+      }
     }, (error) => {
       console.error("User history query error:", error);
     });
@@ -413,8 +416,12 @@ export default function UserDashboard() {
                     <Siren className="w-5 h-5 text-orange-600" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-gray-900 text-sm">Emergency Alert Transmitted</h3>
-                    <p className="text-xs text-gray-500 capitalize">Status: {activeEmergency.status}</p>
+                    <h3 className="font-bold text-gray-900 text-sm">
+                      {dispatchedAmbulance ? "Ambulance Dispatched & Accepted" : "Emergency Alert Transmitted"}
+                    </h3>
+                    <p className="text-xs text-gray-500 capitalize">
+                      Status: {dispatchedAmbulance ? "Accepted & en route" : "Awaiting driver acceptance"}
+                    </p>
                   </div>
                 </div>
 

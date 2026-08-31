@@ -160,6 +160,9 @@ export default function AmbulanceDashboard() {
       status:       'dispatched',
       ambulanceId:  firebaseUser?.uid,
     });
+    if (firebaseUser?.uid && gps.location) {
+      await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+    }
     setActiveEmerg(emergency);
 
     // Suggest best hospitals immediately on acceptance
