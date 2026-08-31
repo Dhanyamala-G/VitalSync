@@ -117,6 +117,22 @@ export default function Login() {
           <p className="text-center text-red-200 text-xs mt-6">
             🏥 Connecting people to emergency services
           </p>
+
+          {/* Direct Visual Diagnostics to verify Vercel configuration */}
+          <div className="mt-6 bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 text-left text-[11px] text-white font-mono space-y-1 max-w-sm mx-auto shadow-lg">
+            <p className="font-extrabold text-xs text-red-100 mb-1 flex items-center gap-1">🔧 Environment Diagnostics</p>
+            <p>API Key Loaded: <span className="font-bold text-green-300">{String(import.meta.env.VITE_FIREBASE_API_KEY !== 'YOUR_API_KEY' && !!import.meta.env.VITE_FIREBASE_API_KEY)}</span></p>
+            {import.meta.env.VITE_FIREBASE_API_KEY && import.meta.env.VITE_FIREBASE_API_KEY !== 'YOUR_API_KEY' ? (
+              <>
+                <p>Key Prefix: <span className="text-yellow-200 font-bold">{import.meta.env.VITE_FIREBASE_API_KEY.substring(0, 6)}</span></p>
+                <p>Key Suffix: <span className="text-yellow-200 font-bold">{import.meta.env.VITE_FIREBASE_API_KEY.substring(import.meta.env.VITE_FIREBASE_API_KEY.length - 4)}</span></p>
+                <p>Key Length: <span className="text-green-300 font-bold">{import.meta.env.VITE_FIREBASE_API_KEY.length} characters</span></p>
+              </>
+            ) : (
+              <p className="text-red-300 font-bold">⚠️ Stuck on default 'YOUR_API_KEY' or empty!</p>
+            )}
+            <p>Project ID: <span className="text-yellow-200 font-bold">{import.meta.env.VITE_FIREBASE_PROJECT_ID || 'missing'}</span></p>
+          </div>
         </motion.div>
       </div>
     </div>
