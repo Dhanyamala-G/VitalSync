@@ -17,7 +17,7 @@ import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
-import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances } from '../../services/emergencyService';
+import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, getActiveNearbyBystanderEmergencies } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
 import { collection, onSnapshot, query, doc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -42,6 +42,12 @@ export default function UserDashboard() {
   const [motionEnabled,   setMotionEnabled]   = useState(false);
   const [tab,             setTab]             = useState<'home' | 'profile' | 'history'>('home');
   const [bystanderMode,   setBystanderMode]   = useState(false);
+  const [nearbyAlertModal, setNearbyAlertModal] = useState<{
+    emergency: Emergency;
+    distanceMeters: number;
+  } | null>(null);
+  const [isCheckingNearby, setIsCheckingNearby] = useState(false);
+  const [trackedEmergencyId, setTrackedEmergencyId] = useState<string | null>(null);
 
   const gps = useGPS(true);
   const pendingEmergencyIdRef = useRef<string | null>(null);
@@ -95,11 +101,9 @@ export default function UserDashboard() {
     startEmergencyTrigger(mag);
   }, [startEmergencyTrigger]);
 
-  // Start Bystander Emergency: Instantly sends request without personal details
-  const startBystanderEmergency = useCallback(async () => {
-    if (activeEmergency) return;
+  // Start Bystander Emergency: with pre-check for existing nearby alerts
+  const createBystanderEmergencyDirectly = useCallback(async () => {
     if (!firebaseUser) return;
-
     const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
 
     try {
@@ -134,7 +138,49 @@ export default function UserDashboard() {
     } catch (err) {
       console.error("Failed to trigger bystander emergency:", err);
     }
-  }, [activeEmergency, firebaseUser, gps.location]);
+  }, [firebaseUser, gps.location]);
+
+  const handleBystanderClick = useCallback(async () => {
+    if (activeEmergency) return;
+    if (!firebaseUser) return;
+
+    const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
+    setIsCheckingNearby(true);
+
+    try {
+      // Check for any active bystander emergencies reported within 300 meters by others
+      const nearby = await getActiveNearbyBystanderEmergencies(
+        emergencyLoc.lat,
+        emergencyLoc.lng,
+        `bystander_${firebaseUser.uid}`,
+        0.3 // 300m
+      );
+
+      if (nearby.length > 0) {
+        setNearbyAlertModal(nearby[0]);
+        setIsCheckingNearby(false);
+        return;
+      }
+    } catch (err) {
+      console.warn("Nearby check error, proceeding with trigger:", err);
+    } finally {
+      setIsCheckingNearby(false);
+    }
+
+    await createBystanderEmergencyDirectly();
+  }, [activeEmergency, createBystanderEmergencyDirectly, firebaseUser, gps.location]);
+
+  const handleJoinExistingEmergency = useCallback(() => {
+    if (!nearbyAlertModal) return;
+    setTrackedEmergencyId(nearbyAlertModal.emergency.id);
+    setActiveEmergency(nearbyAlertModal.emergency);
+    setNearbyAlertModal(null);
+  }, [nearbyAlertModal]);
+
+  const handleProceedAnyway = useCallback(async () => {
+    setNearbyAlertModal(null);
+    await createBystanderEmergencyDirectly();
+  }, [createBystanderEmergencyDirectly]);
 
   const handleStillness = useCallback((_dur: number) => {
     // stillness signal noted — handled in dialog
@@ -163,7 +209,11 @@ export default function UserDashboard() {
             timestamp: getTimestampMillis(data.timestamp),
           } as Emergency;
         })
-        .filter(e => e.userId === firebaseUser.uid || e.userId === `bystander_${firebaseUser.uid}`);
+        .filter(e => 
+          e.userId === firebaseUser.uid || 
+          e.userId === `bystander_${firebaseUser.uid}` ||
+          (trackedEmergencyId && e.id === trackedEmergencyId)
+        );
 
       // Sort client-side descending
       all.sort((a, b) => b.timestamp - a.timestamp);
@@ -173,13 +223,13 @@ export default function UserDashboard() {
       
       const active = all.find(e => ['triggered','confirmed','dispatched'].includes(e.status));
       setActiveEmergency(active || null);
-      if (active && active.userId.startsWith('bystander_')) {
+      if (active && (active.userId.startsWith('bystander_') || active.id === trackedEmergencyId)) {
         setBystanderMode(true);
       }
     }, (error) => {
       console.error("User history query error:", error);
     });
-  }, [firebaseUser?.uid]);
+  }, [firebaseUser?.uid, trackedEmergencyId]);
 
   // Dynamically update emergency location in Firestore as GPS changes
   useEffect(() => {
@@ -255,9 +305,19 @@ export default function UserDashboard() {
 
   const cancelEmergency = async () => {
     if (activeEmergency) {
-      await updateEmergency(activeEmergency.id, { status: 'aborted' });
+      if (!trackedEmergencyId || activeEmergency.id !== trackedEmergencyId) {
+        await updateEmergency(activeEmergency.id, { status: 'aborted' });
+      }
       setActiveEmergency(null);
+      setTrackedEmergencyId(null);
     }
+  };
+
+  const timeAgo = (ts: number) => {
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
   };
 
   const statusBadge = (status: string) => {
@@ -277,6 +337,79 @@ export default function UserDashboard() {
         onAbort={handleAbort}
         onConfirmed={handleConfirmed}
       />
+
+      {/* Nearby Active Incident Detected Confirmation Modal */}
+      <AnimatePresence>
+        {nearbyAlertModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-orange-500"
+            >
+              <div className="bg-orange-600 p-5 text-white flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-black text-base tracking-tight">ALERT ALREADY REPORTED</h2>
+                  <p className="text-xs text-orange-100 font-medium">Incident detected at this location</p>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div className="bg-orange-50 rounded-2xl p-4 border border-orange-100 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-orange-800 uppercase">Existing Bystander Alert</span>
+                    <span className="text-xs bg-orange-200 text-orange-800 font-extrabold px-2 py-0.5 rounded-full">
+                      ~{nearbyAlertModal.distanceMeters}m away
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    An emergency at your location was already transmitted via VitalSync{' '}
+                    <span className="font-semibold text-gray-900">{timeAgo(nearbyAlertModal.emergency.timestamp)}</span>.
+                  </p>
+                  <div className="pt-1 flex items-center gap-2 text-xs text-orange-900 font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-orange-500 animate-ping" />
+                    Status: {nearbyAlertModal.emergency.status === 'dispatched' ? 'Ambulance En Route' : 'Alerting Dispatch Hub'}
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-500 text-center">
+                  To avoid dispatching redundant ambulances to the same incident, you can monitor the active ambulance en route.
+                </p>
+
+                <div className="space-y-2 pt-1">
+                  <button
+                    onClick={handleJoinExistingEmergency}
+                    className="btn-primary w-full py-3 text-xs font-bold bg-orange-600 hover:bg-orange-700 justify-center"
+                  >
+                    Track Existing Dispatch
+                  </button>
+                  <button
+                    onClick={handleProceedAnyway}
+                    className="btn-secondary w-full py-2.5 text-xs font-semibold text-gray-600 hover:text-gray-800 justify-center border-gray-200"
+                  >
+                    Report as Separate Incident
+                  </button>
+                  <button
+                    onClick={() => setNearbyAlertModal(null)}
+                    className="btn-ghost w-full py-2 text-xs text-gray-400 hover:text-gray-600 justify-center"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Top Bar */}
       <div className="top-bar">
@@ -380,34 +513,34 @@ export default function UserDashboard() {
             )}
 
             {/* GPS Proximity / Standby Map */}
-            {(gps.location || activeEmergency?.location) && (
-              <MapView
-                center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
-                showRoute={!!dispatchedAmbulance}
-                markers={[
-                  { 
-                    lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
-                    lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
-                    label: 'Incident Location', 
-                    color: 'red' as const, 
-                    pulse: true 
-                  },
-                  ...(dispatchedAmbulance?.location ? [{
-                    lat: dispatchedAmbulance.location.lat,
-                    lng: dispatchedAmbulance.location.lng,
-                    label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
-                    color: 'blue' as const,
-                    pulse: true
-                  }] : activeEmergency ? ambulances.filter(a => a.status === 'available' && a.location).map(a => ({
+            <MapView
+              center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
+              showRoute={!!dispatchedAmbulance}
+              markers={[
+                { 
+                  lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
+                  lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
+                  label: 'Incident Location', 
+                  color: 'red' as const, 
+                  pulse: true 
+                },
+                ...(dispatchedAmbulance?.location ? [{
+                  lat: dispatchedAmbulance.location.lat,
+                  lng: dispatchedAmbulance.location.lng,
+                  label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
+                  color: 'blue' as const,
+                  pulse: true
+                }] : ambulances
+                  .filter(a => (a.status === 'available' || !a.status) && a.location && (a.location.lat !== 0 || a.location.lng !== 0))
+                  .map(a => ({
                     lat: a.location!.lat,
                     lng: a.location!.lng,
-                    label: `Available: ${a.vehicleNo} (${a.driverName})`,
+                    label: `Available: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
                     color: 'blue' as const,
                     pulse: false
-                  })) : [])
-                ]}
-              />
-            )}
+                  })))
+              ]}
+            />
 
             {/* Active Emergency Status or Dispatch Trigger */}
             {activeEmergency ? (
@@ -492,20 +625,30 @@ export default function UserDashboard() {
             ) : (
               <div className="card p-5 text-center space-y-4">
                 <button
-                  onClick={startBystanderEmergency}
-                  className="relative inline-flex items-center justify-center w-36 h-36 rounded-full bg-orange-600 shadow-orange-lg active:scale-95 transition-all mx-auto"
+                  onClick={handleBystanderClick}
+                  disabled={isCheckingNearby}
+                  className="relative inline-flex items-center justify-center w-36 h-36 rounded-full bg-orange-600 shadow-orange-lg active:scale-95 transition-all mx-auto disabled:opacity-80"
                 >
                   <span className="absolute inset-0 rounded-full bg-orange-600 animate-ping-slow opacity-30" />
                   <span className="absolute inset-3 rounded-full bg-orange-500" />
                   <div className="relative text-white text-center">
-                    <ShieldAlert className="w-9 h-9 mx-auto mb-1" />
-                    <span className="text-xs font-black tracking-wider block">CALL</span>
-                    <span className="text-[10px] font-bold block opacity-90">AMBULANCE</span>
+                    {isCheckingNearby ? (
+                      <div className="flex flex-col items-center justify-center">
+                        <span className="w-7 h-7 border-2 border-white/30 border-t-white rounded-full animate-spin mb-1" />
+                        <span className="text-[10px] font-bold block">CHECKING...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <ShieldAlert className="w-9 h-9 mx-auto mb-1" />
+                        <span className="text-xs font-black tracking-wider block">CALL</span>
+                        <span className="text-[10px] font-bold block opacity-90">AMBULANCE</span>
+                      </>
+                    )}
                   </div>
                 </button>
                 <div>
                   <h4 className="font-extrabold text-gray-800 text-sm">Tap to Summon Anonymous Help</h4>
-                  <p className="text-[11px] text-gray-400 mt-1">This will instantly dispatch the closest standby ambulance.</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Verifies active local alerts before dispatching the closest standby ambulance.</p>
                 </div>
               </div>
             )}
@@ -545,34 +688,34 @@ export default function UserDashboard() {
                 </div>
 
                 {/* Live Map / Tracker */}
-                {(gps.location || activeEmergency?.location) && (
-                  <MapView
-                    center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
-                    showRoute={!!dispatchedAmbulance}
-                    markers={[
-                      { 
-                        lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
-                        lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
-                        label: 'You', 
-                        color: 'red' as const, 
-                        pulse: true 
-                      },
-                      ...(dispatchedAmbulance?.location ? [{
-                        lat: dispatchedAmbulance.location.lat,
-                        lng: dispatchedAmbulance.location.lng,
-                        label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
-                        color: 'blue' as const,
-                        pulse: true
-                      }] : activeEmergency ? ambulances.filter(a => a.status === 'available' && a.location).map(a => ({
+                <MapView
+                  center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
+                  showRoute={!!dispatchedAmbulance}
+                  markers={[
+                    { 
+                      lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
+                      lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
+                      label: 'You', 
+                      color: 'red' as const, 
+                      pulse: true 
+                    },
+                    ...(dispatchedAmbulance?.location ? [{
+                      lat: dispatchedAmbulance.location.lat,
+                      lng: dispatchedAmbulance.location.lng,
+                      label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
+                      color: 'blue' as const,
+                      pulse: true
+                    }] : ambulances
+                      .filter(a => (a.status === 'available' || !a.status) && a.location && (a.location.lat !== 0 || a.location.lng !== 0))
+                      .map(a => ({
                         lat: a.location!.lat,
                         lng: a.location!.lng,
-                        label: `Available: ${a.vehicleNo} (${a.driverName})`,
+                        label: `Available: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
                         color: 'blue' as const,
                         pulse: false
-                      })) : [])
-                    ]}
-                  />
-                )}
+                      })))
+                  ]}
+                />
 
                 {/* Conditionally render: Active tracker or Trigger options */}
                 {activeEmergency ? (

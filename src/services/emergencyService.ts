@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import type { Emergency, HospitalAlert, AmbulanceProfile } from '../types';
+import { haversineKm } from './aiService';
 
 // Helper to safely get milliseconds from Firestore timestamp, number, or Date
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,7 +57,6 @@ export function subscribeToEmergencies(
     console.error("subscribeToEmergencies query error:", error);
   });
 }
-
 export function subscribeToEmergency(id: string, callback: (e: Emergency | null) => void) {
   return onSnapshot(doc(db, 'emergencies', id), (snap) => {
     if (!snap.exists()) {
@@ -70,6 +70,51 @@ export function subscribeToEmergency(id: string, callback: (e: Emergency | null)
       timestamp: getTimestampMillis(data.timestamp),
     } as Emergency);
   });
+}
+
+// ── Check Existing Nearby Bystander Emergencies ────
+export async function getActiveNearbyBystanderEmergencies(
+  lat: number,
+  lng: number,
+  excludeUserId?: string,
+  radiusKm = 0.3 // 300 meters
+): Promise<{ emergency: Emergency; distanceMeters: number }[]> {
+  try {
+    const snap = await getDocs(collection(db, 'emergencies'));
+    const now = Date.now();
+    const list: { emergency: Emergency; distanceMeters: number }[] = [];
+
+    snap.docs.forEach(d => {
+      const data = d.data();
+      const ts = getTimestampMillis(data.timestamp);
+      // Active within last 30 minutes and is a bystander emergency
+      if (
+        ['triggered', 'confirmed', 'dispatched'].includes(data.status) &&
+        data.userId?.startsWith('bystander_') &&
+        (!excludeUserId || data.userId !== excludeUserId) &&
+        now - ts < 30 * 60 * 1000 &&
+        data.location?.lat &&
+        data.location?.lng
+      ) {
+        const distKm = haversineKm(lat, lng, data.location.lat, data.location.lng);
+        if (distKm <= radiusKm) {
+          list.push({
+            emergency: {
+              id: d.id,
+              ...data,
+              timestamp: ts,
+            } as Emergency,
+            distanceMeters: Math.round(distKm * 1000),
+          });
+        }
+      }
+    });
+
+    return list.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  } catch (err) {
+    console.error('Failed to query nearby bystander emergencies:', err);
+    return [];
+  }
 }
 
 // ── Ambulances ────────────────────────────────
