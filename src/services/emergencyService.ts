@@ -72,12 +72,11 @@ export function subscribeToEmergency(id: string, callback: (e: Emergency | null)
   });
 }
 
-// ── Check Existing Nearby Bystander Emergencies ────
+// ── Check Existing Nearby Active Emergencies ────
 export async function getActiveNearbyBystanderEmergencies(
   lat: number,
   lng: number,
-  excludeUserId?: string,
-  radiusKm = 0.3 // 300 meters
+  radiusKm = 0.5 // 500 meters
 ): Promise<{ emergency: Emergency; distanceMeters: number }[]> {
   try {
     const snap = await getDocs(collection(db, 'emergencies'));
@@ -87,14 +86,13 @@ export async function getActiveNearbyBystanderEmergencies(
     snap.docs.forEach(d => {
       const data = d.data();
       const ts = getTimestampMillis(data.timestamp);
-      // Active within last 30 minutes and is a bystander emergency
+      // Active emergency in progress within last 60 minutes
       if (
         ['triggered', 'confirmed', 'dispatched'].includes(data.status) &&
-        data.userId?.startsWith('bystander_') &&
-        (!excludeUserId || data.userId !== excludeUserId) &&
-        now - ts < 30 * 60 * 1000 &&
-        data.location?.lat &&
-        data.location?.lng
+        Math.abs(now - ts) < 60 * 60 * 1000 &&
+        data.location &&
+        typeof data.location.lat === 'number' &&
+        typeof data.location.lng === 'number'
       ) {
         const distKm = haversineKm(lat, lng, data.location.lat, data.location.lng);
         if (distKm <= radiusKm) {
@@ -112,7 +110,7 @@ export async function getActiveNearbyBystanderEmergencies(
 
     return list.sort((a, b) => a.distanceMeters - b.distanceMeters);
   } catch (err) {
-    console.error('Failed to query nearby bystander emergencies:', err);
+    console.error('Failed to query nearby emergencies:', err);
     return [];
   }
 }

@@ -46,6 +46,10 @@ export default function UserDashboard() {
     emergency: Emergency;
     distanceMeters: number;
   } | null>(null);
+  const [activeNearbyAlert, setActiveNearbyAlert] = useState<{
+    emergency: Emergency;
+    distanceMeters: number;
+  } | null>(null);
   const [isCheckingNearby, setIsCheckingNearby] = useState(false);
   const [trackedEmergencyId, setTrackedEmergencyId] = useState<string | null>(null);
 
@@ -140,6 +144,32 @@ export default function UserDashboard() {
     }
   }, [firebaseUser, gps.location]);
 
+  // Periodic background check for nearby active incidents while in bystander mode
+  useEffect(() => {
+    if (!bystanderMode || activeEmergency) {
+      setActiveNearbyAlert(null);
+      return;
+    }
+
+    const checkNearby = async () => {
+      const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
+      const nearby = await getActiveNearbyBystanderEmergencies(
+        emergencyLoc.lat,
+        emergencyLoc.lng,
+        0.5 // 500m
+      );
+      if (nearby.length > 0) {
+        setActiveNearbyAlert(nearby[0]);
+      } else {
+        setActiveNearbyAlert(null);
+      }
+    };
+
+    checkNearby();
+    const interval = setInterval(checkNearby, 3000);
+    return () => clearInterval(interval);
+  }, [bystanderMode, activeEmergency, gps.location]);
+
   const handleBystanderClick = useCallback(async () => {
     if (activeEmergency) return;
     if (!firebaseUser) return;
@@ -148,16 +178,16 @@ export default function UserDashboard() {
     setIsCheckingNearby(true);
 
     try {
-      // Check for any active bystander emergencies reported within 300 meters by others
+      // Check for any active emergencies reported within 500 meters
       const nearby = await getActiveNearbyBystanderEmergencies(
         emergencyLoc.lat,
         emergencyLoc.lng,
-        `bystander_${firebaseUser.uid}`,
-        0.3 // 300m
+        0.5 // 500m
       );
 
       if (nearby.length > 0) {
         setNearbyAlertModal(nearby[0]);
+        setActiveNearbyAlert(nearby[0]);
         setIsCheckingNearby(false);
         return;
       }
@@ -498,6 +528,39 @@ export default function UserDashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Live Active Incident Detected Nearby Banner */}
+            {activeNearbyAlert && !activeEmergency && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="card p-4 bg-orange-50 border-2 border-orange-400 text-orange-950 shadow-md flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-orange-200 rounded-full flex items-center justify-center shrink-0">
+                    <AlertTriangle className="w-5 h-5 text-orange-700 animate-pulse" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase text-orange-900 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-orange-600 animate-ping" />
+                      Alert Already Reported Nearby (~{activeNearbyAlert.distanceMeters}m)
+                    </p>
+                    <p className="text-[11px] text-orange-800 font-medium">
+                      Status: {activeNearbyAlert.emergency.status === 'dispatched' ? 'Ambulance En Route' : 'Alerting Dispatch'} • {timeAgo(activeNearbyAlert.emergency.timestamp)}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setTrackedEmergencyId(activeNearbyAlert.emergency.id);
+                    setActiveEmergency(activeNearbyAlert.emergency);
+                  }}
+                  className="btn-primary py-2 px-3 text-xs font-bold bg-orange-600 hover:bg-orange-700 shrink-0 shadow-sm"
+                >
+                  Track Dispatch
+                </button>
+              </motion.div>
+            )}
 
             {/* Explanatory Info Card */}
             {!activeEmergency && (

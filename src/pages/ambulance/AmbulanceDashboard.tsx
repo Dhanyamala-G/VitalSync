@@ -68,24 +68,28 @@ export default function AmbulanceDashboard() {
     return subscribeToEmergencies(list => {
       setEmergencies(list);
       
-      if (!activeEmerg) {
-        const confirmed = list.find(e => ['confirmed', 'triggered'].includes(e.status));
-        if (confirmed) {
-          setIncomingAlert(confirmed);
+      const myActiveMission = list.find(
+        e => e.ambulanceId === firebaseUser?.uid && ['dispatched', 'confirmed', 'en_route'].includes(e.status)
+      );
+
+      if (activeEmerg || myActiveMission) {
+        setIncomingAlert(null);
+        siren.stop();
+      } else {
+        const unassigned = list.find(e => ['confirmed', 'triggered'].includes(e.status) && !e.ambulanceId);
+        if (unassigned) {
+          setIncomingAlert(unassigned);
           siren.play();
         } else {
           setIncomingAlert(null);
           siren.stop();
         }
-      } else {
-        setIncomingAlert(null);
-        siren.stop();
       }
       
       prevCountRef.current = list.length;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeEmerg]);
+  }, [activeEmerg, firebaseUser?.uid]);
 
   // Fetch hospitals once
   useEffect(() => {
@@ -153,6 +157,7 @@ export default function AmbulanceDashboard() {
 
   const acceptEmergency = useCallback(async (emergency: Emergency) => {
     siren.stop();
+    setIncomingAlert(null);
     arrivedRef.current = false;
     setDistanceKm(null);
     setSentAlert(false);
@@ -181,8 +186,9 @@ export default function AmbulanceDashboard() {
   }, [firebaseUser?.uid, siren, gps.location, hospitals]);
 
   const declineEmergency = useCallback(async (emergency: Emergency) => {
+    siren.stop();
     await updateEmergency(emergency.id, { status: 'aborted' });
-  }, []);
+  }, [siren]);
 
   const sendHospitalAlert = useCallback(async () => {
     if (!bestHosp || !activeEmerg || !firebaseUser) return;
@@ -615,14 +621,31 @@ export default function AmbulanceDashboard() {
               exit={{ scale: 0.9, y: 20 }}
               className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-brand-500"
             >
-              <div className="bg-brand-600 p-5 text-white flex items-center gap-3">
-                <motion.div animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }}>
-                  <AlertTriangle className="w-8 h-8 text-white fill-white/20" />
-                </motion.div>
-                <div>
-                  <h2 className="font-black text-lg tracking-tight">NEW EMERGENCY ALERT</h2>
-                  <p className="text-xs text-red-100 font-medium">Immediate dispatch requested</p>
+              <div className="bg-brand-600 p-5 text-white flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <motion.div animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }}>
+                    <AlertTriangle className="w-8 h-8 text-white fill-white/20" />
+                  </motion.div>
+                  <div>
+                    <h2 className="font-black text-base tracking-tight">NEW EMERGENCY ALERT</h2>
+                    <p className="text-xs text-red-100 font-medium">Immediate dispatch requested</p>
+                  </div>
                 </div>
+
+                <button
+                  onClick={() => {
+                    if (siren.isPlaying) {
+                      siren.stop();
+                    } else {
+                      siren.play();
+                    }
+                  }}
+                  title={siren.isPlaying ? "Silence Siren" : "Play Siren"}
+                  className="p-1.5 px-2.5 rounded-xl bg-white/20 hover:bg-white/30 text-white transition-all flex items-center gap-1.5 text-xs font-bold shrink-0"
+                >
+                  <Volume2 className={`w-4 h-4 ${siren.isPlaying ? 'animate-bounce text-yellow-300' : 'text-white/60'}`} />
+                  <span className="text-[10px]">{siren.isPlaying ? 'Siren On' : 'Silent'}</span>
+                </button>
               </div>
 
               <div className="p-6 space-y-4">
