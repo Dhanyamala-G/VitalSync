@@ -10,7 +10,7 @@ import {
   Activity, Navigation, Building2, Volume2,
   Clock, CheckCircle, Mic, MicOff,
   Star, Bed, Droplets, Wind, AlertTriangle,
-  Target, Zap,
+  Target, Zap, EyeOff,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useGPS } from '../../hooks/useGPS';
@@ -132,7 +132,11 @@ export default function AmbulanceDashboard() {
   useEffect(() => {
     if (!activeEmerg) return;
     const latest = emergencies.find(e => e.id === activeEmerg.id);
-    if (latest && ['dispatched', 'confirmed', 'en_route', 'triggered'].includes(latest.status)) {
+    if (
+      latest &&
+      latest.ambulanceId === firebaseUser?.uid &&
+      ['dispatched', 'confirmed', 'en_route'].includes(latest.status)
+    ) {
       if (
         latest.location.lat !== activeEmerg.location.lat ||
         latest.location.lng !== activeEmerg.location.lng ||
@@ -141,20 +145,20 @@ export default function AmbulanceDashboard() {
         setActiveEmerg(latest);
       }
     } else {
-      // Emergency canceled/aborted/resolved/removed -> immediately clear all patient tracking
+      // Emergency canceled/aborted/resolved/unaccepted -> immediately clear all patient tracking
       setActiveEmerg(null);
       setBestHosp(null);
       setDistanceKm(null);
       setSentAlert(false);
       setArrivedBanner(false);
     }
-  }, [emergencies, activeEmerg]);
+  }, [emergencies, activeEmerg, firebaseUser?.uid]);
 
-  // Auto-engage active mission on mount or reload if already dispatched to this ambulance
+  // Auto-engage active mission on mount or reload only if already accepted and dispatched to this ambulance
   useEffect(() => {
     if (!firebaseUser?.uid || activeEmerg) return;
     const activeMission = emergencies.find(
-      e => e.ambulanceId === firebaseUser.uid && ['dispatched', 'confirmed'].includes(e.status)
+      e => e.ambulanceId === firebaseUser.uid && ['dispatched', 'confirmed', 'en_route'].includes(e.status)
     );
     if (activeMission) {
       setActiveEmerg(activeMission);
@@ -272,7 +276,8 @@ export default function AmbulanceDashboard() {
       iconText: '🚑',
     });
   }
-  if (activeEmerg?.location) {
+  // ONLY show patient marker if mission has been accepted by this driver
+  if (activeEmerg?.location && activeEmerg.ambulanceId === firebaseUser?.uid) {
     mapMarkers.push({
       lat: activeEmerg.location.lat,
       lng: activeEmerg.location.lng,
@@ -282,7 +287,7 @@ export default function AmbulanceDashboard() {
       iconText: '📍',
     });
   }
-  if (bestHosp) {
+  if (bestHosp && activeEmerg?.ambulanceId === firebaseUser?.uid) {
     mapMarkers.push({
       lat: bestHosp.hospital.location.lat,
       lng: bestHosp.hospital.location.lng,
@@ -453,10 +458,19 @@ export default function AmbulanceDashboard() {
                         </div>
 
                         <div className="flex items-center gap-2 mb-3 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-                          <MapPin className="w-3 h-3 text-brand-600" />
-                          {e.location.lat.toFixed(5)}, {e.location.lng.toFixed(5)}
-                          <span className="ml-auto flex items-center gap-1">
-                            <Activity className="w-3 h-3" />
+                          <MapPin className="w-3.5 h-3.5 text-brand-600 shrink-0" />
+                          {isMyAcceptedMission ? (
+                            <span className="font-semibold text-gray-800">
+                              GPS: {e.location.lat.toFixed(5)}, {e.location.lng.toFixed(5)}
+                            </span>
+                          ) : (
+                            <span className="font-medium text-gray-400 italic flex items-center gap-1">
+                              <EyeOff className="w-3 h-3 text-gray-400" />
+                              Location Hidden (Accept to unlock GPS navigation)
+                            </span>
+                          )}
+                          <span className="ml-auto flex items-center gap-1 font-semibold text-gray-600">
+                            <Activity className="w-3 h-3 text-gray-400" />
                             {e.sensorData?.maxShakeMagnitude?.toFixed(1)} m/s²
                           </span>
                         </div>
