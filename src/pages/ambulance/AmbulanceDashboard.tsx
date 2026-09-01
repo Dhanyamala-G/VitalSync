@@ -3,7 +3,7 @@
 //  AUTO-TRIGGER: GPS proximity < 200m → auto hospital recommendation
 //  No manual "Find Hospital" button
 // ─────────────────────────────────────────────
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Ambulance, Bell, MapPin, LogOut, Phone,
@@ -19,7 +19,7 @@ import { useSirenAlarm } from '../../components/SirenAlarm';
 import MapView from '../../components/MapView';
 import type { MapMarker } from '../../components/MapView';
 import {
-  subscribeToEmergencies, updateEmergency,
+  subscribeToEmergencies, subscribeToAmbulances, updateEmergency,
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
 } from '../../services/emergencyService';
 import { recommendHospitals, haversineKm } from '../../services/aiService';
@@ -37,6 +37,7 @@ export default function AmbulanceDashboard() {
 
   const [tab,             setTab]             = useState<'alerts' | 'map' | 'hospital'>('alerts');
   const [emergencies,     setEmergencies]     = useState<Emergency[]>([]);
+  const [fleetAmbulances, setFleetAmbulances] = useState<AmbulanceProfile[]>([]);
   const [activeEmerg,     setActiveEmerg]     = useState<Emergency | null>(null);
   const [incomingAlert,   setIncomingAlert]   = useState<Emergency | null>(null);
   const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
@@ -55,7 +56,33 @@ export default function AmbulanceDashboard() {
   const siren  = useSirenAlarm();
   const voice  = useVoice(t => setVoiceNote(t));
 
-  const unassignedAlerts = emergencies.filter(e => ['confirmed', 'triggered'].includes(e.status));
+  const visibleAlerts = emergencies.filter(e => 
+    (e.ambulanceId === firebaseUser?.uid && ['dispatched', 'confirmed', 'en_route'].includes(e.status)) ||
+    (!e.ambulanceId && ['confirmed', 'triggered'].includes(e.status))
+  );
+
+  const hasActiveMission = !!(
+    activeEmerg ||
+    emergencies.some(e => e.ambulanceId === firebaseUser?.uid && ['dispatched', 'confirmed', 'en_route'].includes(e.status))
+  );
+
+  // Set of ambulance UIDs currently busy on an active dispatched mission
+  const busyAmbulanceUids = useMemo(() => {
+    return new Set(
+      emergencies
+        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status))
+        .map(e => e.ambulanceId as string)
+    );
+  }, [emergencies]);
+
+  // Other fleet ambulances
+  const otherFleetAmbulances = fleetAmbulances.filter(
+    a => a.uid !== firebaseUser?.uid && a.location && (a.location.lat !== 0 || a.location.lng !== 0)
+  );
+
+  const freeAmbulanceCount = otherFleetAmbulances.filter(
+    a => !busyAmbulanceUids.has(a.uid) && a.status !== 'on_mission'
+  ).length;
 
   // Push ambulance GPS to Firestore every 10 s
   useEffect(() => {
@@ -96,11 +123,16 @@ export default function AmbulanceDashboard() {
     fetchHospitals().then(h => setHospitals(h as HospitalProfile[]));
   }, []);
 
+  // Real-time fleet ambulances subscription
+  useEffect(() => {
+    return subscribeToAmbulances(setFleetAmbulances);
+  }, []);
+
   // Sync active emergency with latest real-time updates from emergencies feed
   useEffect(() => {
     if (!activeEmerg) return;
     const latest = emergencies.find(e => e.id === activeEmerg.id);
-    if (latest) {
+    if (latest && ['dispatched', 'confirmed', 'en_route', 'triggered'].includes(latest.status)) {
       if (
         latest.location.lat !== activeEmerg.location.lat ||
         latest.location.lng !== activeEmerg.location.lng ||
@@ -109,8 +141,12 @@ export default function AmbulanceDashboard() {
         setActiveEmerg(latest);
       }
     } else {
-      // Reset back to standby/available if the emergency is no longer active (aborted/resolved/arrived)
+      // Emergency canceled/aborted/resolved/removed -> immediately clear all patient tracking
       setActiveEmerg(null);
+      setBestHosp(null);
+      setDistanceKm(null);
+      setSentAlert(false);
+      setArrivedBanner(false);
     }
   }, [emergencies, activeEmerg]);
 
@@ -187,8 +223,16 @@ export default function AmbulanceDashboard() {
 
   const declineEmergency = useCallback(async (emergency: Emergency) => {
     siren.stop();
+    setIncomingAlert(null);
+    if (activeEmerg?.id === emergency.id) {
+      setActiveEmerg(null);
+      setBestHosp(null);
+      setDistanceKm(null);
+      setSentAlert(false);
+      setArrivedBanner(false);
+    }
     await updateEmergency(emergency.id, { status: 'aborted' });
-  }, [siren]);
+  }, [siren, activeEmerg]);
 
   const sendHospitalAlert = useCallback(async () => {
     if (!bestHosp || !activeEmerg || !firebaseUser) return;
@@ -216,9 +260,52 @@ export default function AmbulanceDashboard() {
   }, [bestHosp, activeEmerg, firebaseUser, amb?.vehicleNo, voiceNote]);
 
   const mapMarkers: MapMarker[] = [];
-  if (gps.location)           mapMarkers.push({ lat: gps.location.lat, lng: gps.location.lng, label: 'You (Ambulance)', color: 'blue', pulse: true });
-  if (activeEmerg?.location)  mapMarkers.push({ lat: activeEmerg.location.lat, lng: activeEmerg.location.lng, label: `Patient: ${activeEmerg.userName}`, color: 'red', pulse: true });
-  if (bestHosp)               mapMarkers.push({ lat: bestHosp.hospital.location.lat, lng: bestHosp.hospital.location.lng, label: bestHosp.hospital.name, color: 'green' });
+  if (gps.location) {
+    mapMarkers.push({
+      lat: gps.location.lat,
+      lng: gps.location.lng,
+      label: hasActiveMission
+        ? `You: ${amb?.vehicleNo || 'Ambulance'} (On Mission)`
+        : `You: ${amb?.vehicleNo || 'Ambulance'} (Standby Free)`,
+      color: hasActiveMission ? 'orange' : 'blue',
+      pulse: true,
+      iconText: '🚑',
+    });
+  }
+  if (activeEmerg?.location) {
+    mapMarkers.push({
+      lat: activeEmerg.location.lat,
+      lng: activeEmerg.location.lng,
+      label: `Patient: ${activeEmerg.userName}`,
+      color: 'red',
+      pulse: true,
+      iconText: '📍',
+    });
+  }
+  if (bestHosp) {
+    mapMarkers.push({
+      lat: bestHosp.hospital.location.lat,
+      lng: bestHosp.hospital.location.lng,
+      label: `Hospital: ${bestHosp.hospital.name}`,
+      color: 'purple',
+      iconText: '🏥',
+    });
+  }
+  
+  // Show nearby fleet ambulances (Green for Free, Orange for On Mission)
+  otherFleetAmbulances.forEach(a => {
+    const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+    mapMarkers.push({
+      lat: a.location!.lat,
+      lng: a.location!.lng,
+      label: isBusy
+        ? `🟠 On Mission: ${a.vehicleNo} (${a.driverName || 'Driver'})`
+        : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
+      color: isBusy ? 'orange' : 'green',
+      pulse: isBusy,
+      iconText: isBusy ? '🚨' : '🚑',
+    });
+  });
 
   const timeAgo = (ts: number) => {
     const s = Math.floor((Date.now() - ts) / 1000);
@@ -241,8 +328,8 @@ export default function AmbulanceDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`badge ${unassignedAlerts.length > 0 ? 'badge-red animate-pulse' : 'badge-green'}`}>
-            {unassignedAlerts.length > 0 ? `${unassignedAlerts.length} Alert` : 'Standby'}
+          <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : visibleAlerts.length > 0 ? 'badge-red animate-pulse' : 'badge-green'}`}>
+            {hasActiveMission ? 'Mission Active' : visibleAlerts.length > 0 ? `${visibleAlerts.length} Alert` : 'Standby'}
           </span>
           <button onClick={signOut} className="btn-ghost p-2"><LogOut className="w-4 h-4" /></button>
         </div>
@@ -308,19 +395,23 @@ export default function AmbulanceDashboard() {
               <div className="flex items-center gap-2">
                 <Phone className="w-4 h-4 text-gray-400" />
                 <span className="text-sm text-gray-600">{amb?.phone}</span>
-                <span className="ml-auto badge-green">Available</span>
+                <span className={`ml-auto badge ${hasActiveMission ? 'badge-yellow font-bold' : 'badge-green'}`}>
+                  {hasActiveMission ? 'Dispatched (En Route)' : 'Available'}
+                </span>
               </div>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-3">
                 <p className="section-title mb-0">Live Alerts</p>
-                {unassignedAlerts.length > 0 && (
-                  <span className="badge-red animate-pulse">{unassignedAlerts.length} incoming</span>
+                {visibleAlerts.length > 0 && (
+                  <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : 'badge-red animate-pulse'}`}>
+                    {hasActiveMission ? '1 Active Mission' : `${visibleAlerts.length} incoming`}
+                  </span>
                 )}
               </div>
 
-              {unassignedAlerts.length === 0 ? (
+              {visibleAlerts.length === 0 ? (
                 <div className="card p-8 text-center">
                   <Bell className="w-10 h-10 text-gray-200 mx-auto mb-3" />
                   <p className="text-gray-400 text-sm">No active alerts</p>
@@ -328,42 +419,90 @@ export default function AmbulanceDashboard() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {unassignedAlerts.map(e => (
-                    <motion.div key={e.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="alert-card">
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="font-bold text-sm text-gray-900">{e.userName}</span>
-                            <span className={e.classification === 'HIGH' ? 'badge-red' : 'badge-gray'}>{e.classification}</span>
+                  {visibleAlerts.map(e => {
+                    const isMyAcceptedMission = e.ambulanceId === firebaseUser?.uid || activeEmerg?.id === e.id;
+                    return (
+                      <motion.div
+                        key={e.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className={`alert-card transition-all ${isMyAcceptedMission ? 'border-2 border-green-500 bg-green-50/20 shadow-md' : ''}`}
+                      >
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-bold text-sm text-gray-900">{e.userName}</span>
+                              {isMyAcceptedMission ? (
+                                <span className="badge-green font-extrabold text-[10px] flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                                  ACCEPTED (EN ROUTE)
+                                </span>
+                              ) : (
+                                <span className={e.classification === 'HIGH' ? 'badge-red' : 'badge-gray'}>{e.classification}</span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-500 flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> {timeAgo(e.timestamp)}
+                            </p>
+                            <p className="text-xs text-gray-400 mt-0.5">{e.userBloodGroup} · {e.userPhone}</p>
                           </div>
-                          <p className="text-xs text-gray-500 flex items-center gap-1">
-                            <Clock className="w-3 h-3" /> {timeAgo(e.timestamp)}
-                          </p>
-                          <p className="text-xs text-gray-400 mt-0.5">{e.userBloodGroup} · {e.userPhone}</p>
+                          <div className="text-right">
+                            <div className="text-2xl font-black text-brand-700">{e.confidenceScore}%</div>
+                            <p className="text-xs text-gray-400">AI score</p>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <div className="text-2xl font-black text-brand-700">{e.confidenceScore}%</div>
-                          <p className="text-xs text-gray-400">AI score</p>
+
+                        <div className="flex items-center gap-2 mb-3 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                          <MapPin className="w-3 h-3 text-brand-600" />
+                          {e.location.lat.toFixed(5)}, {e.location.lng.toFixed(5)}
+                          <span className="ml-auto flex items-center gap-1">
+                            <Activity className="w-3 h-3" />
+                            {e.sensorData?.maxShakeMagnitude?.toFixed(1)} m/s²
+                          </span>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2 mb-3 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-                        <MapPin className="w-3 h-3 text-brand-600" />
-                        {e.location.lat.toFixed(5)}, {e.location.lng.toFixed(5)}
-                        <span className="ml-auto flex items-center gap-1">
-                          <Activity className="w-3 h-3" />
-                          {e.sensorData?.maxShakeMagnitude?.toFixed(1)} m/s²
-                        </span>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => acceptEmergency(e)} className="btn-primary flex-1 py-2.5 text-sm">
-                          Accept Mission
-                        </button>
-                        <button onClick={() => declineEmergency(e)} className="btn-secondary flex-1 py-2.5 text-sm">
-                          Decline
-                        </button>
-                      </div>
-                    </motion.div>
-                  ))}
+
+                        <div className="flex gap-2">
+                          {isMyAcceptedMission ? (
+                            <>
+                              <button
+                                onClick={() => setTab('map')}
+                                className="btn-primary flex-1 py-2.5 text-sm bg-green-600 hover:bg-green-700 font-bold"
+                              >
+                                Track Patient →
+                              </button>
+                              <button
+                                onClick={() => declineEmergency(e)}
+                                className="btn-secondary flex-1 py-2.5 text-sm border-red-200 text-red-600 hover:bg-red-50 font-semibold"
+                              >
+                                Decline Mission
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => acceptEmergency(e)}
+                                disabled={hasActiveMission}
+                                title={hasActiveMission ? "You have an active accepted mission" : "Accept Emergency"}
+                                className={`btn-primary flex-1 py-2.5 text-sm ${
+                                  hasActiveMission
+                                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed border-gray-200 hover:bg-gray-200 shadow-none'
+                                    : ''
+                                }`}
+                              >
+                                {hasActiveMission ? 'Occupied (Finish Current)' : 'Accept Mission'}
+                              </button>
+                              <button
+                                onClick={() => declineEmergency(e)}
+                                className="btn-secondary flex-1 py-2.5 text-sm"
+                              >
+                                Decline
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -400,11 +539,119 @@ export default function AmbulanceDashboard() {
                 </div>
               </>
             ) : (
-              <div className="text-center py-10">
-                <Navigation className="w-10 h-10 text-gray-200 mx-auto mb-2" />
-                <p className="text-gray-400 text-sm">Accept an alert to start tracking</p>
+              <div className="space-y-4 py-2">
+                <div className="card p-6 text-center space-y-2 bg-gray-50/80 border border-gray-100 rounded-2xl">
+                  <Navigation className="w-10 h-10 text-gray-300 mx-auto" />
+                  <h4 className="font-bold text-gray-700 text-sm">No Active Patient Tracking</h4>
+                  <p className="text-gray-400 text-xs max-w-xs mx-auto">
+                    The request was canceled or removed from alerts. There is no patient location to track.
+                  </p>
+                </div>
+                
+                <div className="card p-3">
+                  <p className="text-xs font-semibold text-gray-500 mb-2 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    Ambulance Standby Map & Fleet Network
+                  </p>
+                  <MapView
+                    center={gps.location || { lat: 13.0627, lng: 80.2545 }}
+                    showRoute={false}
+                    markers={mapMarkers}
+                    height="280px"
+                    zoom={13}
+                  />
+                </div>
               </div>
             )}
+
+            {/* ── NEARBY AVAILABLE FLEET AMBULANCES (MULTI-UNIT BACKUP) ── */}
+            <div className="mt-4 pt-3 border-t border-gray-100">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
+                    <Ambulance className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-xs text-gray-900">Fleet Ambulances Nearby</h3>
+                    <p className="text-[10px] text-gray-400">Mutual aid / Multi-casualty backup</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="badge-green text-[9px] font-bold">
+                    {freeAmbulanceCount} Free
+                  </span>
+                  <span className="badge-orange text-[9px] font-bold">
+                    {otherFleetAmbulances.length - freeAmbulanceCount} On Mission
+                  </span>
+                </div>
+              </div>
+
+              {otherFleetAmbulances.length === 0 ? (
+                <div className="bg-gray-50 p-4 rounded-2xl text-center text-xs text-gray-400">
+                  No other active fleet ambulances detected nearby.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {otherFleetAmbulances.map(unit => {
+                    const isBusy = busyAmbulanceUids.has(unit.uid) || unit.status === 'on_mission';
+                    const dist = gps.location && unit.location
+                      ? haversineKm(gps.location.lat, gps.location.lng, unit.location.lat, unit.location.lng)
+                      : null;
+                    return (
+                      <div
+                        key={unit.uid}
+                        className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
+                          isBusy ? 'bg-orange-50/40 border-orange-200/60' : 'bg-gray-50/80 border-gray-100'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-gray-900 truncate">
+                              {unit.vehicleNo || 'Ambulance Unit'}
+                            </span>
+                            {isBusy ? (
+                              <span className="badge-yellow text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse" />
+                                On Mission
+                              </span>
+                            ) : (
+                              <span className="badge-green text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+                                Free
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-500 mt-0.5">
+                            {unit.driverName || 'Driver'} · {unit.vehicleType || 'Basic Life Support'}
+                          </p>
+                          {dist !== null && (
+                            <p className="text-[10px] text-brand-600 font-semibold mt-0.5">
+                              {dist < 1 ? `${Math.round(dist * 1000)} m away` : `${dist.toFixed(1)} km away`}
+                            </p>
+                          )}
+                        </div>
+
+                        {unit.phone ? (
+                          <a
+                            href={`tel:${unit.phone}`}
+                            className={`btn-primary py-2 px-3 text-xs flex items-center gap-1.5 font-bold shrink-0 rounded-xl shadow-sm ${
+                              isBusy
+                                ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                                : 'bg-green-600 hover:bg-green-700 text-white'
+                            }`}
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            {isBusy ? 'Contact Unit' : 'Call Backup'}
+                          </a>
+                        ) : (
+                          <span className="text-[10px] text-gray-400">No Contact</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -585,9 +832,9 @@ export default function AmbulanceDashboard() {
           <button onClick={() => setTab('alerts')} className={`nav-tab ${tab === 'alerts' ? 'active' : ''}`}>
             <Bell className="w-5 h-5" />
             <span>Alerts</span>
-            {unassignedAlerts.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-brand-600 text-white text-xs rounded-full flex items-center justify-center">
-                {unassignedAlerts.length}
+            {visibleAlerts.length > 0 && (
+              <span className={`absolute -top-1 -right-1 w-4 h-4 text-white text-xs rounded-full flex items-center justify-center ${hasActiveMission ? 'bg-green-600' : 'bg-brand-600'}`}>
+                {visibleAlerts.length}
               </span>
             )}
           </button>

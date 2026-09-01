@@ -15,51 +15,72 @@ L.Icon.Default.mergeOptions({
 });
 
 export interface MapMarker {
-  lat:     number;
-  lng:     number;
-  label:   string;
-  color?:  'red' | 'blue' | 'green' | 'orange';
-  pulse?:  boolean;
+  lat:        number;
+  lng:        number;
+  label:      string;
+  color?:     'red' | 'blue' | 'green' | 'orange' | 'purple' | 'gray' | 'yellow';
+  pulse?:     boolean;
+  iconText?:  string;
 }
 
 interface Props {
-  center:     { lat: number; lng: number };
-  zoom?:      number;
-  markers?:   MapMarker[];
-  height?:    string;
-  className?: string;
-  showRoute?: boolean;
+  center:      { lat: number; lng: number };
+  zoom?:       number;
+  markers?:    MapMarker[];
+  height?:     string;
+  className?:  string;
+  showRoute?:  boolean;
+  showLegend?: boolean;
 }
 
-function makeIcon(color: string, pulse: boolean): L.DivIcon {
+function makeIcon(color: string, pulse: boolean, iconText?: string): L.DivIcon {
   const ring = pulse
-    ? `<span style="position:absolute;inset:-6px;border-radius:50%;border:2px solid ${color};animation:ping 1.5s ease-in-out infinite;opacity:0.5;"></span>`
+    ? `<span style="position:absolute;inset:-6px;border-radius:50%;border:2.5px solid ${color};animation:ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;opacity:0.75;"></span>`
     : '';
+  
+  const inner = iconText
+    ? `<span style="font-size:12px;line-height:1;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5));">${iconText}</span>`
+    : '';
+
   return L.divIcon({
     className: '',
     html: `
-      <div style="position:relative;width:24px;height:24px;">
+      <div style="position:relative;width:28px;height:28px;display:flex;items-center;justify-content:center;">
         ${ring}
         <div style="
-          width:24px;height:24px;border-radius:50%;
-          background:${color};border:3px solid white;
-          box-shadow:0 2px 8px rgba(0,0,0,0.35);
-        "></div>
+          width:28px;height:28px;border-radius:50%;
+          background:${color};border:2.5px solid white;
+          box-shadow:0 3px 10px rgba(0,0,0,0.4);
+          display:flex;align-items:center;justify-content:center;
+        ">
+          ${inner}
+        </div>
       </div>`,
-    iconSize:   [24, 24],
-    iconAnchor: [12, 12],
-    popupAnchor: [0, -16],
+    iconSize:   [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -18],
   });
 }
 
 const COLOR_MAP: Record<string, string> = {
-  red:    '#DC2626',
-  blue:   '#2563EB',
-  green:  '#16A34A',
-  orange: '#D97706',
+  red:    '#DC2626', // Incident / Patient
+  blue:   '#2563EB', // Current User / Self
+  green:  '#16A34A', // Free / Available Ambulance (Can accept missions)
+  orange: '#EA580C', // On Mission / Dispatched Ambulance (Accepted)
+  purple: '#9333EA', // Hospital
+  yellow: '#EAB308',
+  gray:   '#6B7280',
 };
 
-export default function MapView({ center, zoom = 14, markers = [], height = '240px', className = '', showRoute = false }: Props) {
+export default function MapView({
+  center,
+  zoom = 14,
+  markers = [],
+  height = '240px',
+  className = '',
+  showRoute = false,
+  showLegend = true,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef       = useRef<L.Map | null>(null);
 
@@ -100,10 +121,15 @@ export default function MapView({ center, zoom = 14, markers = [], height = '240
     });
 
     markers.forEach(m => {
-      const hexColor = COLOR_MAP[m.color || 'red'];
-      const icon     = makeIcon(hexColor, m.pulse || false);
+      const hexColor = COLOR_MAP[m.color || 'red'] || '#DC2626';
+      const icon     = makeIcon(hexColor, m.pulse || false, m.iconText);
       L.marker([m.lat, m.lng], { icon })
-        .bindPopup(`<b style="color:${hexColor}">${m.label}</b>`)
+        .bindPopup(`
+          <div style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;padding:2px 0;">
+            <b style="color:${hexColor};display:block;margin-bottom:2px;">${m.label}</b>
+            <span style="color:#64748b;font-size:11px;">${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</span>
+          </div>
+        `)
         .addTo(map);
     });
 
@@ -111,8 +137,8 @@ export default function MapView({ center, zoom = 14, markers = [], height = '240
       const latlngs = markers.map(m => [m.lat, m.lng] as L.LatLngExpression);
       L.polyline(latlngs, {
         color: '#2563EB',
-        weight: 5,
-        opacity: 0.8,
+        weight: 4,
+        opacity: 0.85,
         dashArray: '8, 8',
         lineJoin: 'round',
       }).addTo(map);
@@ -120,10 +146,32 @@ export default function MapView({ center, zoom = 14, markers = [], height = '240
   }, [markers, showRoute]);
 
   return (
-    <div
-      ref={containerRef}
-      className={`map-container ${className}`}
-      style={{ height }}
-    />
+    <div className="space-y-1.5">
+      <div
+        ref={containerRef}
+        className={`map-container rounded-2xl overflow-hidden shadow-inner border border-gray-100 ${className}`}
+        style={{ height }}
+      />
+      {showLegend && (
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 py-1 px-2 bg-gray-50/90 rounded-xl border border-gray-200/60 text-[10px] text-gray-600 font-medium">
+          <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-green-600 border border-white shadow-xs" />
+            <span className="text-gray-700 font-semibold">Free (Available)</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-orange-600 border border-white shadow-xs" />
+            <span className="text-gray-700 font-semibold">On Mission</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 border border-white shadow-xs" />
+            <span className="text-gray-700 font-semibold">Location (You)</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-600 border border-white shadow-xs" />
+            <span className="text-gray-700 font-semibold">Emergency</span>
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

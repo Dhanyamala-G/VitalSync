@@ -5,7 +5,7 @@
 //  • Emergency dialog trigger
 //  • Emergency history
 // ─────────────────────────────────────────────
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
@@ -17,7 +17,7 @@ import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
-import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, getActiveNearbyBystanderEmergencies } from '../../services/emergencyService';
+import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
 import { collection, onSnapshot, query, doc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -38,6 +38,7 @@ export default function UserDashboard() {
   const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
   const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
   const [ambulances,      setAmbulances]      = useState<AmbulanceProfile[]>([]);
+  const [allEmergencies,  setAllEmergencies]  = useState<Emergency[]>([]);
   const [history,         setHistory]         = useState<Emergency[]>([]);
   const [motionEnabled,   setMotionEnabled]   = useState(false);
   const [tab,             setTab]             = useState<'home' | 'profile' | 'history'>('home');
@@ -288,6 +289,20 @@ export default function UserDashboard() {
   useEffect(() => {
     return subscribeToAmbulances(setAmbulances);
   }, []);
+
+  // Listen to all active emergencies to dynamically detect which ambulances are on missions
+  useEffect(() => {
+    return subscribeToEmergencies(setAllEmergencies);
+  }, []);
+
+  // Set of ambulance UIDs that are currently busy on an active mission
+  const busyAmbulanceUids = useMemo(() => {
+    return new Set(
+      allEmergencies
+        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status))
+        .map(e => e.ambulanceId as string)
+    );
+  }, [allEmergencies]);
 
   const handleAbort = useCallback(async () => {
     setDialogOpen(false);
@@ -585,23 +600,31 @@ export default function UserDashboard() {
                   lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
                   label: 'Incident Location', 
                   color: 'red' as const, 
-                  pulse: true 
+                  pulse: true,
+                  iconText: '📍'
                 },
                 ...(dispatchedAmbulance?.location ? [{
                   lat: dispatchedAmbulance.location.lat,
                   lng: dispatchedAmbulance.location.lng,
-                  label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
-                  color: 'blue' as const,
-                  pulse: true
+                  label: `🚨 Dispatched Unit: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
+                  color: 'orange' as const,
+                  pulse: true,
+                  iconText: '🚑'
                 }] : ambulances
-                  .filter(a => (a.status === 'available' || !a.status) && a.location && (a.location.lat !== 0 || a.location.lng !== 0))
-                  .map(a => ({
-                    lat: a.location!.lat,
-                    lng: a.location!.lng,
-                    label: `Available: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
-                    color: 'blue' as const,
-                    pulse: false
-                  })))
+                  .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
+                  .map(a => {
+                    const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+                    return {
+                      lat: a.location!.lat,
+                      lng: a.location!.lng,
+                      label: isBusy
+                        ? `🟠 On Mission: ${a.vehicleNo} (${a.driverName || 'Driver'})`
+                        : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
+                      color: isBusy ? ('orange' as const) : ('green' as const),
+                      pulse: isBusy,
+                      iconText: isBusy ? '🚨' : '🚑'
+                    };
+                  }))
               ]}
             />
 
@@ -758,25 +781,33 @@ export default function UserDashboard() {
                     { 
                       lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
                       lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
-                      label: 'You', 
-                      color: 'red' as const, 
-                      pulse: true 
+                      label: activeEmergency ? 'Emergency Location (You)' : 'Your Location', 
+                      color: activeEmergency ? ('red' as const) : ('blue' as const), 
+                      pulse: true,
+                      iconText: activeEmergency ? '📍' : '👤'
                     },
                     ...(dispatchedAmbulance?.location ? [{
                       lat: dispatchedAmbulance.location.lat,
                       lng: dispatchedAmbulance.location.lng,
-                      label: `Ambulance: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
-                      color: 'blue' as const,
-                      pulse: true
+                      label: `🚨 Dispatched Unit: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
+                      color: 'orange' as const,
+                      pulse: true,
+                      iconText: '🚑'
                     }] : ambulances
-                      .filter(a => (a.status === 'available' || !a.status) && a.location && (a.location.lat !== 0 || a.location.lng !== 0))
-                      .map(a => ({
-                        lat: a.location!.lat,
-                        lng: a.location!.lng,
-                        label: `Available: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
-                        color: 'blue' as const,
-                        pulse: false
-                      })))
+                      .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
+                      .map(a => {
+                        const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+                        return {
+                          lat: a.location!.lat,
+                          lng: a.location!.lng,
+                          label: isBusy
+                            ? `🟠 On Mission: ${a.vehicleNo} (${a.driverName || 'Driver'})`
+                            : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
+                          color: isBusy ? ('orange' as const) : ('green' as const),
+                          pulse: isBusy,
+                          iconText: isBusy ? '🚨' : '🚑'
+                        };
+                      }))
                   ]}
                 />
 
