@@ -10,7 +10,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
   Shield, Zap, LogOut, User, Clock, CheckCircle2,
-  Droplets, Pill, Contact, Siren, EyeOff, Eye, Users, ShieldAlert,
+  Contact, Siren, EyeOff, Eye, Users, ShieldAlert,
+  Edit3, Plus, X, Save, Trash2,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useShakeDetector } from '../../hooks/useShakeDetector';
@@ -19,19 +20,12 @@ import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
 import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies } from '../../services/emergencyService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
-import { collection, onSnapshot, query, doc } from 'firebase/firestore';
+import { collection, onSnapshot, query, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
-const BLOOD_COLORS: Record<string, string> = {
-  'A+':'bg-red-100 text-red-700','A-':'bg-red-200 text-red-800',
-  'B+':'bg-orange-100 text-orange-700','B-':'bg-orange-200 text-orange-800',
-  'O+':'bg-brand-100 text-brand-700','O-':'bg-brand-200 text-brand-800',
-  'AB+':'bg-purple-100 text-purple-700','AB-':'bg-purple-200 text-purple-800',
-};
-
 export default function UserDashboard() {
-  const { profile, signOut, firebaseUser } = useAuthStore();
-  const user = profile as UserProfile;
+  const { profile, signOut, firebaseUser, setProfile } = useAuthStore();
+  const user = profile as UserProfile | null;
 
   const [dialogOpen,      setDialogOpen]      = useState(false);
   const [shakeMag,        setShakeMag]        = useState(0);
@@ -53,6 +47,78 @@ export default function UserDashboard() {
   } | null>(null);
   const [isCheckingNearby, setIsCheckingNearby] = useState(false);
   const [trackedEmergencyId, setTrackedEmergencyId] = useState<string | null>(null);
+
+  // Profile Edit State
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editAge, setEditAge] = useState<number>(25);
+  const [editBloodGroup, setEditBloodGroup] = useState('O+');
+  const [editConditions, setEditConditions] = useState('');
+  const [editAllergies, setEditAllergies] = useState('');
+  const [editMedications, setEditMedications] = useState('');
+  const [editContacts, setEditContacts] = useState<{ name: string; relation: string; phone: string }[]>([]);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  const openEditModal = () => {
+    setEditName(user?.name || firebaseUser?.displayName || '');
+    setEditPhone(user?.phone || '');
+    setEditAge(user?.age || 25);
+    setEditBloodGroup(user?.bloodGroup || 'O+');
+    setEditConditions((user?.conditions || []).join(', '));
+    setEditAllergies((user?.allergies || []).join(', '));
+    setEditMedications((user?.medications || []).join(', '));
+    setEditContacts(
+      user?.emergencyContacts && user.emergencyContacts.length > 0
+        ? [...user.emergencyContacts]
+        : [{ name: '', relation: '', phone: '' }]
+    );
+    setIsEditingProfile(true);
+  };
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firebaseUser?.uid) return;
+    setSavingProfile(true);
+    try {
+      const updatedProfile: Partial<UserProfile> = {
+        name: editName.trim() || user?.name || firebaseUser.displayName || 'User',
+        phone: editPhone.trim(),
+        age: Number(editAge) || 25,
+        bloodGroup: editBloodGroup,
+        conditions: editConditions.split(',').map(s => s.trim()).filter(Boolean),
+        allergies: editAllergies.split(',').map(s => s.trim()).filter(Boolean),
+        medications: editMedications.split(',').map(s => s.trim()).filter(Boolean),
+        emergencyContacts: editContacts.filter(c => c.name.trim() || c.phone.trim()),
+      };
+
+      await setDoc(doc(db, 'users', firebaseUser.uid), {
+        ...(user || {}),
+        ...updatedProfile,
+        uid: firebaseUser.uid,
+        email: user?.email || firebaseUser.email || '',
+        role: 'user',
+        updatedAt: Date.now(),
+      }, { merge: true });
+
+      setProfile({
+        ...(user || {}),
+        ...updatedProfile,
+        uid: firebaseUser.uid,
+        email: user?.email || firebaseUser.email || '',
+        role: 'user',
+      } as UserProfile);
+
+      setIsEditingProfile(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3500);
+    } catch (err) {
+      console.error('Failed to save profile:', err);
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   const gps = useGPS(true);
   const pendingEmergencyIdRef = useRef<string | null>(null);
@@ -936,99 +1002,245 @@ export default function UserDashboard() {
               </>
             )}
 
-            {tab === 'profile' && user && (
-              <>
-                {/* Profile Card */}
-                <div className="card overflow-hidden">
-                  <div className="bg-gradient-to-r from-brand-600 to-brand-700 px-5 py-6">
-                    <div className="flex items-center gap-4">
-                      <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center">
-                        <User className="w-8 h-8 text-white" />
+            {tab === 'profile' && (
+              <div className="space-y-4">
+                {/* Save Success Banner */}
+                <AnimatePresence>
+                  {saveSuccess && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="bg-green-600 text-white p-3.5 rounded-2xl flex items-center justify-between shadow-lg"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Medical Profile updated & synchronized!
                       </div>
-                      <div>
-                        <h2 className="text-white font-bold text-xl">{user.name}</h2>
-                        <p className="text-red-100 text-sm">{user.email}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${BLOOD_COLORS[user.bloodGroup] || 'bg-gray-100 text-gray-600'}`}>
-                            {user.bloodGroup}
-                          </span>
-                          <span className="text-red-100 text-xs">Age {user.age}</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Profile Header Card */}
+                <div className="card overflow-hidden border border-brand-100 shadow-md">
+                  <div className="bg-gradient-to-r from-brand-600 to-brand-700 px-5 py-6 text-white">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3.5">
+                        <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-inner shrink-0">
+                          {(user?.name || firebaseUser?.displayName || 'U')[0].toUpperCase()}
+                        </div>
+                        <div>
+                          <h2 className="text-white font-extrabold text-lg tracking-tight">
+                            {user?.name || firebaseUser?.displayName || 'Patient / User'}
+                          </h2>
+                          <p className="text-red-100 text-xs truncate max-w-[180px]">
+                            {user?.email || firebaseUser?.email || 'user@vitalsync.health'}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-0.5 rounded-full text-xs font-black">
+                              🩸 {user?.bloodGroup || 'O+'}
+                            </span>
+                            <span className="text-red-100 text-xs font-semibold">
+                              Age {user?.age || '25'}
+                            </span>
+                          </div>
                         </div>
                       </div>
+
+                      <button
+                        onClick={openEditModal}
+                        className="btn-primary py-2 px-3 bg-white hover:bg-white/90 text-brand-700 hover:text-brand-800 font-bold text-xs flex items-center gap-1.5 shadow-sm rounded-xl shrink-0"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        Edit ID
+                      </button>
                     </div>
                   </div>
 
-                  <div className="p-5 space-y-4">
-                    <div className="flex items-center gap-3">
-                      <Phone className="w-4 h-4 text-brand-600" />
-                      <div>
-                        <p className="text-xs text-gray-400">Phone</p>
-                        <p className="text-sm font-medium text-gray-800">{user.phone}</p>
-                      </div>
+                  <div className="p-4 bg-white space-y-3">
+                    <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                      <span className="text-gray-400 flex items-center gap-1.5 font-medium">
+                        <Phone className="w-3.5 h-3.5 text-brand-600" /> Phone Number
+                      </span>
+                      <span className="font-semibold text-gray-800">
+                        {user?.phone || 'Not provided'}
+                      </span>
                     </div>
 
-                    {user.conditions?.length > 0 && (
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Heart className="w-4 h-4 text-brand-600" />
-                          <p className="text-xs font-semibold text-gray-600">Medical Conditions</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {user.conditions.map(c => (
-                            <span key={c} className="badge-red text-xs">{c}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                      <span className="text-gray-400 flex items-center gap-1.5 font-medium">
+                        <Shield className="w-3.5 h-3.5 text-green-600" /> Account Status
+                      </span>
+                      <span className="badge-green text-[10px] font-bold">
+                        Active · Verified
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
-                    {user.allergies?.length > 0 && (
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Droplets className="w-4 h-4 text-orange-500" />
-                          <p className="text-xs font-semibold text-gray-600">Allergies</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {user.allergies.map(a => (
-                            <span key={a} className="badge-yellow text-xs">{a}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                {/* Medical Information Card */}
+                <div className="card p-5 space-y-4 shadow-sm border border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Heart className="w-4 h-4 text-brand-600" />
+                      <p className="font-bold text-sm text-gray-900">Medical ID & Health Info</p>
+                    </div>
+                    <button
+                      onClick={openEditModal}
+                      className="text-brand-600 hover:text-brand-700 text-xs font-bold flex items-center gap-1"
+                    >
+                      <Edit3 className="w-3 h-3" /> Edit
+                    </button>
+                  </div>
 
-                    {user.medications?.length > 0 && (
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Pill className="w-4 h-4 text-blue-500" />
-                          <p className="text-xs font-semibold text-gray-600">Current Medications</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {user.medications.map(m => (
-                            <span key={m} className="badge-blue text-xs">{m}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {user.emergencyContacts?.length > 0 && (
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Contact className="w-4 h-4 text-brand-600" />
-                          <p className="text-xs font-semibold text-gray-600">Emergency Contacts</p>
-                        </div>
-                        {user.emergencyContacts.map((c, i) => (
-                          <div key={i} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-                            <div>
-                              <p className="text-sm font-medium text-gray-800">{c.name}</p>
-                              <p className="text-xs text-gray-400">{c.relation}</p>
-                            </div>
-                            <a href={`tel:${c.phone}`} className="text-brand-600 font-semibold text-sm">{c.phone}</a>
-                          </div>
+                  {/* Medical Conditions */}
+                  <div>
+                    <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                      Chronic Medical Conditions
+                    </p>
+                    {user?.conditions && user.conditions.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {user.conditions.map(c => (
+                          <span key={c} className="badge-red text-xs py-1 px-2.5 font-bold">
+                            {c}
+                          </span>
                         ))}
+                      </div>
+                    ) : (
+                      <div className="bg-gray-50 p-2.5 rounded-xl text-center text-xs text-gray-400 flex items-center justify-between">
+                        <span>No chronic conditions reported</span>
+                        <button onClick={openEditModal} className="text-brand-600 font-bold text-[11px] hover:underline">
+                          + Add
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Allergies */}
+                  <div>
+                    <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                      Allergies & Reactions
+                    </p>
+                    {user?.allergies && user.allergies.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {user.allergies.map(a => (
+                          <span key={a} className="badge-yellow text-xs py-1 px-2.5 font-bold">
+                            ⚠️ {a}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="bg-gray-50 p-2.5 rounded-xl text-center text-xs text-gray-400 flex items-center justify-between">
+                        <span>No known allergies (NKA)</span>
+                        <button onClick={openEditModal} className="text-brand-600 font-bold text-[11px] hover:underline">
+                          + Add
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Current Medications */}
+                  <div>
+                    <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                      Active Medications
+                    </p>
+                    {user?.medications && user.medications.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {user.medications.map(m => (
+                          <span key={m} className="badge-blue text-xs py-1 px-2.5 font-bold">
+                            💊 {m}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="bg-gray-50 p-2.5 rounded-xl text-center text-xs text-gray-400 flex items-center justify-between">
+                        <span>No daily medications registered</span>
+                        <button onClick={openEditModal} className="text-brand-600 font-bold text-[11px] hover:underline">
+                          + Add
+                        </button>
                       </div>
                     )}
                   </div>
                 </div>
-              </>
+
+                {/* Emergency Contacts Card */}
+                <div className="card p-5 space-y-3 shadow-sm border border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Contact className="w-4 h-4 text-brand-600" />
+                      <p className="font-bold text-sm text-gray-900">Emergency Contacts</p>
+                    </div>
+                    <button
+                      onClick={openEditModal}
+                      className="text-brand-600 hover:text-brand-700 text-xs font-bold flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add / Edit
+                    </button>
+                  </div>
+
+                  {user?.emergencyContacts && user.emergencyContacts.length > 0 ? (
+                    <div className="space-y-2">
+                      {user.emergencyContacts.map((c, i) => (
+                        <div key={i} className="flex items-center justify-between p-2.5 bg-gray-50 rounded-xl border border-gray-100/60">
+                          <div>
+                            <p className="text-xs font-bold text-gray-900">{c.name || 'Emergency Contact'}</p>
+                            <p className="text-[11px] text-gray-500">{c.relation || 'Family / Relative'}</p>
+                          </div>
+                          {c.phone ? (
+                            <a
+                              href={`tel:${c.phone}`}
+                              className="btn-primary py-1.5 px-3 text-xs bg-green-600 hover:bg-green-700 text-white font-bold flex items-center gap-1 rounded-lg"
+                            >
+                              <Phone className="w-3 h-3" /> Call
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-gray-400">No phone</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 p-4 rounded-2xl text-center space-y-2">
+                      <p className="text-xs text-gray-500 font-medium">
+                        No emergency contacts added yet.
+                      </p>
+                      <p className="text-[11px] text-gray-400">
+                        Add trusted family members or doctors to be notified during SOS triggers.
+                      </p>
+                      <button
+                        onClick={openEditModal}
+                        className="btn-secondary py-1.5 px-3 text-xs font-bold mx-auto flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Emergency Contact
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Account & Mode Actions */}
+                <div className="card p-4 space-y-2.5 shadow-sm border border-gray-100">
+                  <p className="section-title mb-1">Actions</p>
+
+                  <button
+                    onClick={() => {
+                      setBystanderMode(true);
+                      setTab('home');
+                    }}
+                    className="btn-secondary w-full py-2.5 text-xs text-orange-700 bg-orange-50 hover:bg-orange-100 border-orange-200 font-bold flex items-center justify-center gap-2 rounded-xl"
+                  >
+                    <ShieldAlert className="w-4 h-4 text-orange-600" />
+                    Switch to Anonymous Bystander Mode
+                  </button>
+
+                  <button
+                    onClick={() => signOut()}
+                    className="btn-secondary w-full py-2.5 text-xs text-red-600 hover:bg-red-50 border-red-200 font-bold flex items-center justify-center gap-2 rounded-xl"
+                  >
+                    <LogOut className="w-4 h-4 text-red-600" />
+                    Sign Out
+                  </button>
+                </div>
+              </div>
             )}
 
             {tab === 'history' && (
@@ -1075,25 +1287,245 @@ export default function UserDashboard() {
         )}
       </div>
 
+      {/* ── EDIT PROFILE MODAL ── */}
+      <AnimatePresence>
+        {isEditingProfile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="modal-overlay z-50 p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto"
+            >
+              <div className="p-5 bg-gradient-to-r from-brand-600 to-brand-700 text-white flex items-center justify-between sticky top-0 z-10">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
+                    <Edit3 className="w-4 h-4 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base">Edit Medical Profile</h3>
+                    <p className="text-xs text-red-100">Update your vital info & SOS contacts</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsEditingProfile(false)}
+                  className="p-1.5 rounded-full bg-white/20 hover:bg-white/30 text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveProfile} className="p-5 space-y-4 text-left">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    placeholder="Your Full Name"
+                    className="input-field w-full text-xs"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Phone Number</label>
+                    <input
+                      type="tel"
+                      value={editPhone}
+                      onChange={e => setEditPhone(e.target.value)}
+                      placeholder="+91 98765 43210"
+                      className="input-field w-full text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Age</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={editAge}
+                      onChange={e => setEditAge(Number(e.target.value))}
+                      className="input-field w-full text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Blood Group</label>
+                  <select
+                    value={editBloodGroup}
+                    onChange={e => setEditBloodGroup(e.target.value)}
+                    className="input-field w-full text-xs font-bold"
+                  >
+                    {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map(bg => (
+                      <option key={bg} value={bg}>{bg}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Medical Conditions <span className="font-normal text-gray-400">(comma separated)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editConditions}
+                    onChange={e => setEditConditions(e.target.value)}
+                    placeholder="e.g. Asthma, Diabetes, Hypertension"
+                    className="input-field w-full text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Allergies <span className="font-normal text-gray-400">(comma separated)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editAllergies}
+                    onChange={e => setEditAllergies(e.target.value)}
+                    placeholder="e.g. Penicillin, Peanuts, Latex"
+                    className="input-field w-full text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    Current Medications <span className="font-normal text-gray-400">(comma separated)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editMedications}
+                    onChange={e => setEditMedications(e.target.value)}
+                    placeholder="e.g. Inhaler, Metformin, Aspirin"
+                    className="input-field w-full text-xs"
+                  />
+                </div>
+
+                {/* Contacts Editor */}
+                <div className="pt-2 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-gray-700">Emergency Contacts</label>
+                    <button
+                      type="button"
+                      onClick={() => setEditContacts([...editContacts, { name: '', relation: '', phone: '' }])}
+                      className="text-brand-600 hover:text-brand-700 text-xs font-bold flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add Contact
+                    </button>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {editContacts.map((contact, idx) => (
+                      <div key={idx} className="p-3 bg-gray-50 rounded-2xl border border-gray-100 relative space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase">Contact #{idx + 1}</span>
+                          {editContacts.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setEditContacts(editContacts.filter((_, i) => i !== idx))}
+                              className="text-red-500 hover:text-red-700 p-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            placeholder="Name"
+                            value={contact.name}
+                            onChange={e => {
+                              const updated = [...editContacts];
+                              updated[idx].name = e.target.value;
+                              setEditContacts(updated);
+                            }}
+                            className="input-field text-xs bg-white"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Relation (e.g. Mother)"
+                            value={contact.relation}
+                            onChange={e => {
+                              const updated = [...editContacts];
+                              updated[idx].relation = e.target.value;
+                              setEditContacts(updated);
+                            }}
+                            className="input-field text-xs bg-white"
+                          />
+                        </div>
+                        <input
+                          type="tel"
+                          placeholder="Phone Number"
+                          value={contact.phone}
+                          onChange={e => {
+                            const updated = [...editContacts];
+                            updated[idx].phone = e.target.value;
+                            setEditContacts(updated);
+                          }}
+                          className="input-field w-full text-xs bg-white"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingProfile(false)}
+                    className="btn-secondary flex-1 py-3 text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingProfile}
+                    className="btn-primary flex-1 py-3 text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <Save className="w-4 h-4" />
+                    {savingProfile ? 'Saving…' : 'Save Changes'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Bottom Nav */}
-      {!bystanderMode && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-30 pb-safe">
-          <div className="max-w-md mx-auto flex items-center justify-around">
-            <button onClick={() => setTab('home')} className={`nav-tab ${tab === 'home' ? 'active' : ''}`}>
-              <Heart className="w-5 h-5" />
-              <span>Home</span>
-            </button>
-            <button onClick={() => setTab('profile')} className={`nav-tab ${tab === 'profile' ? 'active' : ''}`}>
-              <User className="w-5 h-5" />
-              <span>Profile</span>
-            </button>
-            <button onClick={() => setTab('history')} className={`nav-tab ${tab === 'history' ? 'active' : ''}`}>
-              <Clock className="w-5 h-5" />
-              <span>History</span>
-            </button>
-          </div>
-        </nav>
-      )}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-30 pb-safe">
+        <div className="max-w-md mx-auto flex items-center justify-around">
+          <button
+            onClick={() => { setTab('home'); setBystanderMode(false); }}
+            className={`nav-tab ${tab === 'home' && !bystanderMode ? 'active' : ''}`}
+          >
+            <Heart className="w-5 h-5" />
+            <span>Home</span>
+          </button>
+          <button
+            onClick={() => { setTab('profile'); setBystanderMode(false); }}
+            className={`nav-tab ${tab === 'profile' && !bystanderMode ? 'active' : ''}`}
+          >
+            <User className="w-5 h-5" />
+            <span>Profile</span>
+          </button>
+          <button
+            onClick={() => { setTab('history'); setBystanderMode(false); }}
+            className={`nav-tab ${tab === 'history' && !bystanderMode ? 'active' : ''}`}
+          >
+            <Clock className="w-5 h-5" />
+            <span>History</span>
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }
