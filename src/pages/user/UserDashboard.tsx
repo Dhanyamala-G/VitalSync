@@ -18,8 +18,9 @@ import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
-import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies } from '../../services/emergencyService';
-import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile } from '../../types';
+import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies, fetchHospitals } from '../../services/emergencyService';
+import { fetchLiveNearbyHospitals } from '../../services/aiService';
+import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile, HospitalProfile } from '../../types';
 import { collection, onSnapshot, query, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
@@ -32,6 +33,7 @@ export default function UserDashboard() {
   const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
   const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
   const [ambulances,      setAmbulances]      = useState<AmbulanceProfile[]>([]);
+  const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
   const [allEmergencies,  setAllEmergencies]  = useState<Emergency[]>([]);
   const [history,         setHistory]         = useState<Emergency[]>([]);
   const [motionEnabled,   setMotionEnabled]   = useState(false);
@@ -236,6 +238,17 @@ export default function UserDashboard() {
     const interval = setInterval(checkNearby, 3000);
     return () => clearInterval(interval);
   }, [bystanderMode, activeEmergency, gps.location]);
+
+  // Dynamically fetch and track nearby hospitals based on live GPS
+  useEffect(() => {
+    const lat = gps.location?.lat ?? 13.0627;
+    const lng = gps.location?.lng ?? 80.2545;
+    fetchHospitals().then(registered => {
+      fetchLiveNearbyHospitals(lat, lng, registered as HospitalProfile[]).then(allHospitals => {
+        setHospitals(allHospitals);
+      });
+    });
+  }, [gps.location?.lat, gps.location?.lng]);
 
   const handleBystanderClick = useCallback(async () => {
     if (activeEmergency) return;
@@ -690,6 +703,15 @@ export default function UserDashboard() {
                       pulse: isBusy,
                       iconText: isBusy ? '🚨' : '🚑'
                     };
+                  })),
+                ...hospitals
+                  .filter(h => h.location && (h.location.lat !== 0 || h.location.lng !== 0))
+                  .map(h => ({
+                    lat: h.location.lat,
+                    lng: h.location.lng,
+                    label: `🏥 ${h.name} (${h.beds?.emergency?.available ?? 0} ER beds, ${h.beds?.icu?.available ?? 0} ICU)`,
+                    color: 'purple' as const,
+                    iconText: '🏥'
                   }))
               ]}
             />
@@ -873,6 +895,15 @@ export default function UserDashboard() {
                           pulse: isBusy,
                           iconText: isBusy ? '🚨' : '🚑'
                         };
+                      })),
+                    ...hospitals
+                      .filter(h => h.location && (h.location.lat !== 0 || h.location.lng !== 0))
+                      .map(h => ({
+                        lat: h.location.lat,
+                        lng: h.location.lng,
+                        label: `🏥 ${h.name} (${h.beds?.emergency?.available ?? 0} ER beds, ${h.beds?.icu?.available ?? 0} ICU)`,
+                        color: 'purple' as const,
+                        iconText: '🏥'
                       }))
                   ]}
                 />
@@ -1294,13 +1325,15 @@ export default function UserDashboard() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="modal-overlay z-50 p-4"
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto"
+            style={{ zIndex: 9999 }}
           >
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto"
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto my-auto relative z-[10000] border border-gray-100"
+              style={{ zIndex: 10000 }}
             >
               <div className="p-5 bg-gradient-to-r from-brand-600 to-brand-700 text-white flex items-center justify-between sticky top-0 z-10">
                 <div className="flex items-center gap-2.5">

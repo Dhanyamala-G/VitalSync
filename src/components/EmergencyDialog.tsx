@@ -255,8 +255,8 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-end justify-center p-4"
-        style={{ background: 'rgba(0,0,0,0.75)' }}
+        className="fixed inset-0 z-[9999] flex items-center sm:items-end justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
+        style={{ zIndex: 9999 }}
       >
         <motion.div
           key="dialog"
@@ -264,7 +264,8 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
           animate={{ y: 0, scale: 1 }}
           exit={{ y: '100%' }}
           transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-          className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl"
+          className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl relative z-[10000] border border-gray-100 my-auto"
+          style={{ zIndex: 10000 }}
         >
           {/* Header */}
           <div className="bg-brand-600 px-6 py-4 flex items-center justify-between">

@@ -10,7 +10,7 @@ import {
   Activity, Navigation, Building2, Volume2,
   Clock, CheckCircle, Mic, MicOff,
   Star, Bed, Droplets, Wind, AlertTriangle,
-  Target, Zap, EyeOff,
+  Target, Zap, EyeOff, User,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useGPS } from '../../hooks/useGPS';
@@ -22,7 +22,7 @@ import {
   subscribeToEmergencies, subscribeToAmbulances, updateEmergency,
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
 } from '../../services/emergencyService';
-import { recommendHospitals, haversineKm } from '../../services/aiService';
+import { recommendHospitals, haversineKm, fetchLiveNearbyHospitals } from '../../services/aiService';
 import type {
   AmbulanceProfile, Emergency, HospitalProfile,
   HospitalRecommendation,
@@ -35,7 +35,7 @@ export default function AmbulanceDashboard() {
   const { profile, signOut, firebaseUser } = useAuthStore();
   const amb = profile as AmbulanceProfile;
 
-  const [tab,             setTab]             = useState<'alerts' | 'map' | 'hospital'>('alerts');
+  const [tab,             setTab]             = useState<'alerts' | 'map' | 'hospital' | 'profile'>('alerts');
   const [emergencies,     setEmergencies]     = useState<Emergency[]>([]);
   const [fleetAmbulances, setFleetAmbulances] = useState<AmbulanceProfile[]>([]);
   const [activeEmerg,     setActiveEmerg]     = useState<Emergency | null>(null);
@@ -118,10 +118,21 @@ export default function AmbulanceDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEmerg, firebaseUser?.uid]);
 
-  // Fetch hospitals once
+  // Dynamically discover and update live nearby hospitals based on current GPS location
   useEffect(() => {
-    fetchHospitals().then(h => setHospitals(h as HospitalProfile[]));
-  }, []);
+    const lat = gps.location?.lat ?? 13.0627;
+    const lng = gps.location?.lng ?? 80.2545;
+    fetchHospitals().then(registered => {
+      fetchLiveNearbyHospitals(lat, lng, registered as HospitalProfile[]).then(allHospitals => {
+        setHospitals(allHospitals);
+        const recs = recommendHospitals(lat, lng, allHospitals, activeEmerg?.userBloodGroup || '');
+        setRecommendations(recs);
+        if (recs.length > 0) {
+          setBestHosp(prev => prev || recs[0]);
+        }
+      });
+    });
+  }, [gps.location?.lat, gps.location?.lng, activeEmerg?.userBloodGroup]);
 
   // Real-time fleet ambulances subscription
   useEffect(() => {
@@ -287,15 +298,20 @@ export default function AmbulanceDashboard() {
       iconText: '📍',
     });
   }
-  if (bestHosp && activeEmerg?.ambulanceId === firebaseUser?.uid) {
-    mapMarkers.push({
-      lat: bestHosp.hospital.location.lat,
-      lng: bestHosp.hospital.location.lng,
-      label: `Hospital: ${bestHosp.hospital.name}`,
-      color: 'purple',
-      iconText: '🏥',
-    });
-  }
+  // Show all nearby tracked hospitals on the map with purple 🏥 pins
+  hospitals.forEach(h => {
+    if (h.location && (h.location.lat !== 0 || h.location.lng !== 0)) {
+      const isTarget = bestHosp?.hospital.uid === h.uid;
+      mapMarkers.push({
+        lat: h.location.lat,
+        lng: h.location.lng,
+        label: `🏥 ${h.name} (${h.beds?.emergency?.available ?? 0} ER beds, ${h.beds?.icu?.available ?? 0} ICU)`,
+        color: 'purple',
+        pulse: isTarget,
+        iconText: '🏥',
+      });
+    }
+  });
   
   // Show nearby fleet ambulances (Green for Free, Orange for On Mission)
   otherFleetAmbulances.forEach(a => {
@@ -384,30 +400,8 @@ export default function AmbulanceDashboard() {
 
         {/* ── ALERTS TAB ─────────────────────── */}
         {tab === 'alerts' && (
-          <>
-            <div className="card p-5">
-              <p className="section-title">Vehicle Details</p>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div className="stat-tile">
-                  <span className="stat-value text-lg">{amb?.vehicleNo || '—'}</span>
-                  <span className="stat-label">Vehicle No.</span>
-                </div>
-                <div className="stat-tile">
-                  <span className="stat-value text-lg">{amb?.vehicleType || '—'}</span>
-                  <span className="stat-label">Type</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Phone className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-600">{amb?.phone}</span>
-                <span className={`ml-auto badge ${hasActiveMission ? 'badge-yellow font-bold' : 'badge-green'}`}>
-                  {hasActiveMission ? 'Dispatched (En Route)' : 'Available'}
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="flex items-center justify-between mb-3">
                 <p className="section-title mb-0">Live Alerts</p>
                 {visibleAlerts.length > 0 && (
                   <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : 'badge-red animate-pulse'}`}>
@@ -520,7 +514,6 @@ export default function AmbulanceDashboard() {
                 </div>
               )}
             </div>
-          </>
         )}
 
         {/* ── MAP TAB ────────────────────────── */}
@@ -838,6 +831,98 @@ export default function AmbulanceDashboard() {
             )}
           </>
         )}
+
+        {/* ── PROFILE TAB ─────────────────────── */}
+        {tab === 'profile' && (
+          <div className="space-y-4">
+            <div className="card overflow-hidden border border-brand-100 shadow-md">
+              <div className="bg-gradient-to-r from-brand-600 to-brand-700 px-5 py-6 text-white">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-inner shrink-0">
+                    🚑
+                  </div>
+                  <div>
+                    <h2 className="text-white font-extrabold text-lg tracking-tight">
+                      {amb?.vehicleNo || 'Ambulance Unit'}
+                    </h2>
+                    <p className="text-red-100 text-xs">
+                      Driver: {amb?.driverName || firebaseUser?.displayName || 'Ambulance Pilot'}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-0.5 rounded-full text-xs font-bold">
+                        {amb?.vehicleType || 'Advanced Life Support'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-white space-y-3">
+                <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                  <span className="text-gray-400 flex items-center gap-1.5 font-medium">
+                    <Phone className="w-3.5 h-3.5 text-brand-600" /> Driver Contact
+                  </span>
+                  <span className="font-semibold text-gray-800">
+                    {amb?.phone || 'Not provided'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                  <span className="text-gray-400 flex items-center gap-1.5 font-medium">
+                    <Activity className="w-3.5 h-3.5 text-green-600" /> Operational Status
+                  </span>
+                  <span className={`badge ${hasActiveMission ? 'badge-yellow font-bold' : 'badge-green font-bold'}`}>
+                    {hasActiveMission ? 'On Mission (Dispatched)' : 'Available (Standby)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                  <span className="text-gray-400 flex items-center gap-1.5 font-medium">
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" /> Dispatch Email
+                  </span>
+                  <span className="font-semibold text-gray-800">
+                    {amb?.email || firebaseUser?.email || 'dispatch@vitalsync.health'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Vehicle Capabilities Card */}
+            <div className="card p-5 space-y-3 shadow-sm border border-gray-100">
+              <p className="font-bold text-sm text-gray-900">Vehicle Equipment & Capabilities</p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-100/60 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="font-medium text-gray-700">Oxygen Support</span>
+                </div>
+                <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-100/60 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="font-medium text-gray-700">Defibrillator / ECG</span>
+                </div>
+                <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-100/60 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="font-medium text-gray-700">First Aid & Trauma</span>
+                </div>
+                <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-100/60 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="font-medium text-gray-700">GPS Live Telemetry</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions Card */}
+            <div className="card p-4 space-y-2.5 shadow-sm border border-gray-100">
+              <p className="section-title mb-1">Account</p>
+              <button
+                onClick={() => signOut()}
+                className="btn-secondary w-full py-2.5 text-xs text-red-600 hover:bg-red-50 border-red-200 font-bold flex items-center justify-center gap-2 rounded-xl"
+              >
+                <LogOut className="w-4 h-4 text-red-600" />
+                Sign Out
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Bottom Nav */}
@@ -863,6 +948,10 @@ export default function AmbulanceDashboard() {
               <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full animate-ping" />
             )}
           </button>
+          <button onClick={() => setTab('profile')} className={`nav-tab ${tab === 'profile' ? 'active' : ''}`}>
+            <User className="w-5 h-5" />
+            <span>Profile</span>
+          </button>
         </div>
       </nav>
 
@@ -873,14 +962,15 @@ export default function AmbulanceDashboard() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(0,0,0,0.8)' }}
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto"
+            style={{ zIndex: 9999 }}
           >
             <motion.div
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-brand-500"
+              className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border-2 border-brand-500 relative z-[10000]"
+              style={{ zIndex: 10000 }}
             >
               <div className="bg-brand-600 p-5 text-white flex items-center justify-between">
                 <div className="flex items-center gap-3">

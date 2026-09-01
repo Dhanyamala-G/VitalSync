@@ -83,6 +83,7 @@ export default function MapView({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef       = useRef<L.Map | null>(null);
+  const lastCenterRef = useRef<{ lat: number; lng: number }>({ lat: 0, lng: 0 });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -91,6 +92,10 @@ export default function MapView({
       zoom,
       zoomControl: false,
       attributionControl: false,
+      scrollWheelZoom: true, // Enabled so user can zoom and explore nearby ambulances & hospitals
+      touchZoom: true,
+      doubleClickZoom: true,
+      dragging: true,
     });
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -99,14 +104,23 @@ export default function MapView({
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     mapRef.current = map;
+    lastCenterRef.current = { lat: center.lat, lng: center.lng };
 
     return () => { map.remove(); mapRef.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update center
+  // Update center smoothly without jumping or jittering
   useEffect(() => {
-    mapRef.current?.setView([center.lat, center.lng]);
+    const map = mapRef.current;
+    if (!map) return;
+    const latDiff = Math.abs(lastCenterRef.current.lat - center.lat);
+    const lngDiff = Math.abs(lastCenterRef.current.lng - center.lng);
+    // Only re-center if significant coordinate change (> ~25 meters)
+    if (latDiff > 0.00025 || lngDiff > 0.00025) {
+      map.setView([center.lat, center.lng], map.getZoom(), { animate: true });
+      lastCenterRef.current = { lat: center.lat, lng: center.lng };
+    }
   }, [center.lat, center.lng]);
 
   // Update markers
@@ -146,25 +160,29 @@ export default function MapView({
   }, [markers, showRoute]);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 relative isolate z-0">
       <div
         ref={containerRef}
-        className={`map-container rounded-2xl overflow-hidden shadow-inner border border-gray-100 ${className}`}
+        className={`map-container rounded-2xl overflow-hidden shadow-inner border border-gray-100 relative isolate z-0 ${className}`}
         style={{ height }}
       />
       {showLegend && (
         <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 py-1 px-2 bg-gray-50/90 rounded-xl border border-gray-200/60 text-[10px] text-gray-600 font-medium">
           <span className="flex items-center gap-1">
             <span className="w-2.5 h-2.5 rounded-full bg-green-600 border border-white shadow-xs" />
-            <span className="text-gray-700 font-semibold">Free (Available)</span>
+            <span className="text-gray-700 font-semibold">Free</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2.5 h-2.5 rounded-full bg-orange-600 border border-white shadow-xs" />
             <span className="text-gray-700 font-semibold">On Mission</span>
           </span>
           <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-600 border border-white shadow-xs" />
+            <span className="text-gray-700 font-semibold">Hospital</span>
+          </span>
+          <span className="flex items-center gap-1">
             <span className="w-2.5 h-2.5 rounded-full bg-blue-600 border border-white shadow-xs" />
-            <span className="text-gray-700 font-semibold">Location (You)</span>
+            <span className="text-gray-700 font-semibold">You</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2.5 h-2.5 rounded-full bg-red-600 border border-white shadow-xs" />
