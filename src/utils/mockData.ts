@@ -90,6 +90,26 @@ export const MOCK_HOSPITALS = [
     ],
     role: 'hospital',
   },
+  {
+    name: 'Saveetha Medical College and Hospital',
+    address: 'Saveetha Nagar, Thandalam, Poonamallee Highway, Chennai - 602105',
+    phone: '+91 044-66726672',
+    location: { lat: 13.0274, lng: 80.0163 },
+    specialties: ['Medical College Hospital', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', 'Neurology', '24/7 Emergency ICU', 'Blood Bank'],
+    beds: {
+      general:   { total: 600, available: 145 },
+      icu:       { total: 50,  available: 16  },
+      emergency: { total: 35,  available: 18  },
+    },
+    blood: { Apos: 24, Aneg: 8, Bpos: 28, Bneg: 6, Opos: 36, Oneg: 12, ABpos: 10, ABneg: 4 },
+    oxygen: { cylinders: 140, piped: true },
+    ventilators: 30,
+    doctorsOnDuty: [
+      { name: 'Dr. S. K. Venkatesh', specialty: 'Medical College Professor & Trauma Lead' },
+      { name: 'Dr. Ananya Raman',   specialty: 'Critical Care & Emergency Medicine' },
+    ],
+    role: 'hospital',
+  },
 ];
 
 export const MOCK_AMBULANCES = [
@@ -140,7 +160,9 @@ export async function seedMockData(
   for (const h of MOCK_HOSPITALS) {
     try {
       // Create a Firebase Auth account for each hospital
-      const email    = `${h.name.toLowerCase().replace(/\s+/g, '')}_hosp@vitalsync.demo`;
+      const email = h.name.toLowerCase().includes('saveetha')
+        ? 'saveetha_hosp@vitalsync.demo'
+        : `${h.name.toLowerCase().replace(/\s+/g, '')}_hosp@vitalsync.demo`;
       const password = 'Demo@1234';
       const cred     = await createUserWithEmailAndPassword(auth, email, password)
         .catch(() => null);
@@ -149,7 +171,7 @@ export async function seedMockData(
         ...h, uid, email,
         createdAt: serverTimestamp(),
       });
-      log(`  ✓ ${h.name}`);
+      log(`  ✓ ${h.name} (${email})`);
     } catch (e) {
       log(`  ⚠ ${h.name}: ${(e as Error).message}`);
     }
@@ -209,5 +231,6 @@ export async function seedMockData(
   log('Demo credentials:');
   log('  User:      priyaramesh@vitalsync.demo / Demo@1234');
   log('  Ambulance: tn01ab1234@vitalsync.demo  / Demo@1234');
-  log('  Hospital:  apollohospitals_hosp@vitalsync.demo / Demo@1234');
+  log('  Saveetha:  saveetha_hosp@vitalsync.demo / Demo@1234');
+  log('  Apollo:    apollohospitals_hosp@vitalsync.demo / Demo@1234');
 }

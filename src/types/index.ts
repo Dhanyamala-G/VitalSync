@@ -136,6 +136,7 @@ export interface Doctor {
 export interface HospitalAlert {
   id: string;
   hospitalId: string;
+  hospitalName?: string;
   ambulanceId: string;
   ambulanceVehicleNo: string;
   emergencyId: string;

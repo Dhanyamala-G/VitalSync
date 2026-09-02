@@ -855,11 +855,11 @@ export default function UserDashboard() {
                     { 
                       lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
                       lng: gps.location?.lng ?? activeEmergency?.location.lng ?? 80.2545, 
-                      label: activeEmergency ? 'Emergency Location (You)' : 'Your Location', 
+                      label: activeEmergency ? 'Emergency Incident (You)' : 'Your Location (Citizen User)', 
                       color: activeEmergency ? ('red' as const) : ('blue' as const), 
                       pulse: true,
                       iconText: activeEmergency ? '📍' : '👤',
-                      category: activeEmergency ? 'Emergency Incident' : 'User Location',
+                      category: activeEmergency ? 'Emergency Incident' : 'Citizen User Location',
                       details: activeEmergency ? 'Emergency alert active' : 'Live GPS fix',
                     },
                     ...(dispatchedAmbulance?.location ? [{
@@ -1066,9 +1066,12 @@ export default function UserDashboard() {
                           <p className="text-red-100 text-xs truncate max-w-[180px]">
                             {user?.email || firebaseUser?.email || 'user@vitalsync.health'}
                           </p>
-                          <div className="flex items-center gap-2 mt-1.5">
+                          <div className="flex flex-wrap items-center gap-2 mt-1.5">
                             <span className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-0.5 rounded-full text-xs font-black">
                               🩸 {user?.bloodGroup || 'O+'}
+                            </span>
+                            <span className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-0.5 rounded-full text-xs font-semibold">
+                              👤 Citizen User
                             </span>
                             <span className="text-red-100 text-xs font-semibold">
                               Age {user?.age || '25'}
@@ -1102,7 +1105,7 @@ export default function UserDashboard() {
                         <Shield className="w-3.5 h-3.5 text-green-600" /> Account Status
                       </span>
                       <span className="badge-green text-[10px] font-bold">
-                        Active · Verified
+                        Verified Citizen Profile
                       </span>
                     </div>
                   </div>

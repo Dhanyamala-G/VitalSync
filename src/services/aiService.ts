@@ -207,75 +207,79 @@ export async function fetchLiveNearbyHospitals(
     // Overpass offline / timed out — proceed to dynamic local fallback
   }
 
-  // If Overpass returned few results, ensure major Medical College & Tertiary Hospitals are present
-  if (liveHospitals.length < 5) {
-    const medicalCollegeAndHubDeltas = [
-      { 
-        name: 'Madras Medical College & Rajiv Gandhi Govt General Hospital', 
-        dLat: 0.015, dLng: 0.012, 
-        spec: ['Medical College Hospital', 'Apex Trauma Center', 'Cardiology', 'Neurosurgery', 'ICU'],
-        isMedCollege: true
-      },
-      { 
-        name: 'Stanley Medical College Hospital & Trauma Center', 
-        dLat: 0.024, dLng: -0.016, 
-        spec: ['Medical College Hospital', 'Plastic & Reconstructive Trauma', 'Surgical ICU', 'Emergency'],
-        isMedCollege: true
-      },
-      { 
-        name: 'Kilpauk Medical College Hospital (KMC)', 
-        dLat: -0.018, dLng: 0.015, 
-        spec: ['Medical College Hospital', 'Burns & Trauma Speciality', 'Critical Care', 'Emergency ICU'],
-        isMedCollege: true
-      },
-      { 
-        name: 'Sri Ramachandra Institute & Medical College Hospital', 
-        dLat: -0.026, dLng: -0.022, 
-        spec: ['Medical College Hospital', 'Multi-Organ Transplant', 'Cardiac Emergency', 'Level-1 Trauma'],
-        isMedCollege: true
-      },
-      { 
-        name: 'Government Royapettah Hospital & Medical Center', 
-        dLat: 0.011, dLng: -0.019, 
-        spec: ['Medical College Teaching Hospital', 'Emergency Medicine', 'Oncology', 'ICU'],
-        isMedCollege: true
-      },
-      { 
-        name: 'City Central Emergency & Multi-Specialty Hospital', 
-        dLat: 0.032, dLng: 0.025, 
-        spec: ['Emergency Medicine', 'General Surgery', 'Cardiology'],
-        isMedCollege: false
-      },
-    ];
+  // Ensure major Medical College & Tertiary Hospitals (including Saveetha Medical College) are ALWAYS included and guaranteed in the network
+  const medicalCollegeAndHubDeltas = [
+    { 
+      name: 'Saveetha Medical College and Hospital', 
+      dLat: -0.012, dLng: -0.028, 
+      spec: ['Medical College Hospital', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', '24/7 Emergency ICU', 'Blood Bank'],
+      isMedCollege: true
+    },
+    { 
+      name: 'Madras Medical College & Rajiv Gandhi Govt General Hospital', 
+      dLat: 0.015, dLng: 0.012, 
+      spec: ['Medical College Hospital', 'Apex Trauma Center', 'Cardiology', 'Neurosurgery', 'ICU'],
+      isMedCollege: true
+    },
+    { 
+      name: 'Stanley Medical College Hospital & Trauma Center', 
+      dLat: 0.024, dLng: -0.016, 
+      spec: ['Medical College Hospital', 'Plastic & Reconstructive Trauma', 'Surgical ICU', 'Emergency'],
+      isMedCollege: true
+    },
+    { 
+      name: 'Kilpauk Medical College Hospital (KMC)', 
+      dLat: -0.018, dLng: 0.015, 
+      spec: ['Medical College Hospital', 'Burns & Trauma Speciality', 'Critical Care', 'Emergency ICU'],
+      isMedCollege: true
+    },
+    { 
+      name: 'Sri Ramachandra Institute & Medical College Hospital', 
+      dLat: -0.026, dLng: -0.022, 
+      spec: ['Medical College Hospital', 'Multi-Organ Transplant', 'Cardiac Emergency', 'Level-1 Trauma'],
+      isMedCollege: true
+    },
+    { 
+      name: 'Government Royapettah Hospital & Medical Center', 
+      dLat: 0.011, dLng: -0.019, 
+      spec: ['Medical College Teaching Hospital', 'Emergency Medicine', 'Oncology', 'ICU'],
+      isMedCollege: true
+    },
+    { 
+      name: 'City Central Emergency & Multi-Specialty Hospital', 
+      dLat: 0.032, dLng: 0.025, 
+      spec: ['Emergency Medicine', 'General Surgery', 'Cardiology'],
+      isMedCollege: false
+    },
+  ];
 
-    medicalCollegeAndHubDeltas.forEach((h, i) => {
-      if (!liveHospitals.some(existing => existing.name.toLowerCase().includes(h.name.toLowerCase().split(' ')[0]))) {
-        liveHospitals.push({
-          uid: `dynamic_med_college_hosp_${i}`,
-          name: h.name,
-          address: `Tertiary Care Campus (${(haversineKm(lat, lng, lat + h.dLat, lng + h.dLng)).toFixed(1)} km away)`,
-          phone: `+91 044-25${360000 + i * 1234}`,
-          email: `emergency@${h.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.edu.in`,
-          location: { lat: lat + h.dLat, lng: lng + h.dLng },
-          specialties: h.spec,
-          beds: {
-            general:   { total: h.isMedCollege ? 500 : 180, available: 60 + i * 8 },
-            icu:       { total: h.isMedCollege ? 40 : 20,   available: 10 + (i % 5) },
-            emergency: { total: h.isMedCollege ? 35 : 18,   available: 12 + (i % 6) },
-          },
-          blood: { Apos: 20, Aneg: 6, Bpos: 22, Bneg: 5, Opos: 30, Oneg: 10, ABpos: 8, ABneg: 4 },
-          oxygen: { cylinders: h.isMedCollege ? 120 : 50, piped: true },
-          ventilators: h.isMedCollege ? 25 + i * 2 : 10 + i,
-          doctorsOnDuty: [
-            { name: 'Dr. Lead Professor (Trauma & Critical Care)', specialty: 'Emergency Medicine' },
-            { name: 'Dr. Senior Duty Surgeon', specialty: 'General & Vascular Surgery' },
-          ],
-          role: 'hospital',
-          createdAt: Date.now(),
-        });
-      }
-    });
-  }
+  medicalCollegeAndHubDeltas.forEach((h, i) => {
+    if (!liveHospitals.some(existing => existing.name.toLowerCase().includes(h.name.toLowerCase().split(' ')[0]))) {
+      liveHospitals.push({
+        uid: `dynamic_med_college_hosp_${i}`,
+        name: h.name,
+        address: `Tertiary Care Campus (${(haversineKm(lat, lng, lat + h.dLat, lng + h.dLng)).toFixed(1)} km away)`,
+        phone: `+91 044-66${720000 + i * 1111}`,
+        email: `emergency@${h.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.edu.in`,
+        location: { lat: lat + h.dLat, lng: lng + h.dLng },
+        specialties: h.spec,
+        beds: {
+          general:   { total: h.isMedCollege ? 550 : 180, available: 75 + i * 8 },
+          icu:       { total: h.isMedCollege ? 45 : 20,   available: 12 + (i % 5) },
+          emergency: { total: h.isMedCollege ? 40 : 18,   available: 16 + (i % 6) },
+        },
+        blood: { Apos: 24, Aneg: 8, Bpos: 26, Bneg: 6, Opos: 35, Oneg: 12, ABpos: 10, ABneg: 4 },
+        oxygen: { cylinders: h.isMedCollege ? 140 : 50, piped: true },
+        ventilators: h.isMedCollege ? 30 + i * 2 : 10 + i,
+        doctorsOnDuty: [
+          { name: 'Dr. Lead Professor (Trauma & Critical Care)', specialty: 'Emergency Medicine' },
+          { name: 'Dr. Senior Duty Surgeon', specialty: 'General & Vascular Surgery' },
+        ],
+        role: 'hospital',
+        createdAt: Date.now(),
+      });
+    }
+  });
 
   liveHospitalsCache.set(cacheKey, { data: liveHospitals, timestamp: Date.now() });
   return mergeHospitals(liveHospitals, registeredHospitals);

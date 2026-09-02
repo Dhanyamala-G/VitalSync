@@ -106,7 +106,63 @@ export default function Login() {
               </button>
             </form>
 
-            <div className="mt-5 text-center">
+            {/* Quick Demo Credentials */}
+            <div className="mt-5 pt-4 border-t border-gray-100">
+              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2 text-center">
+                ⚡ Quick Demo Accounts
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-left">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail('saveetha_hosp@vitalsync.demo');
+                    setPassword('Demo@1234');
+                  }}
+                  className="p-2 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200/70 text-purple-900 transition-colors"
+                >
+                  <p className="font-bold text-[11px] truncate">🎓 Saveetha Hospital</p>
+                  <p className="text-[9px] text-purple-600 truncate">saveetha_hosp@vitalsync.demo</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail('priyaramesh@vitalsync.demo');
+                    setPassword('Demo@1234');
+                  }}
+                  className="p-2 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200/70 text-blue-900 transition-colors"
+                >
+                  <p className="font-bold text-[11px] truncate">👤 Citizen User</p>
+                  <p className="text-[9px] text-blue-600 truncate">priyaramesh@vitalsync.demo</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail('tn01ab1234@vitalsync.demo');
+                    setPassword('Demo@1234');
+                  }}
+                  className="p-2 rounded-xl bg-orange-50 hover:bg-orange-100 border border-orange-200/70 text-orange-900 transition-colors"
+                >
+                  <p className="font-bold text-[11px] truncate">🚑 Ambulance Unit</p>
+                  <p className="text-[9px] text-orange-600 truncate">tn01ab1234@vitalsync.demo</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail('apollohospitals_hosp@vitalsync.demo');
+                    setPassword('Demo@1234');
+                  }}
+                  className="p-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/70 text-emerald-900 transition-colors"
+                >
+                  <p className="font-bold text-[11px] truncate">🏥 Apollo Hospital</p>
+                  <p className="text-[9px] text-emerald-600 truncate">apollohospitals_hosp@...</p>
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 text-center">
               <p className="text-sm text-gray-500">
                 Don't have an account?{' '}
                 <Link to="/register" className="text-brand-600 font-semibold">Register</Link>

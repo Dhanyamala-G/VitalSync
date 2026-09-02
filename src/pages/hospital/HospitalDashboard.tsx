@@ -124,8 +124,9 @@ export default function HospitalDashboard() {
 
   useEffect(() => {
     if (!firebaseUser?.uid) return;
-    return subscribeToHospitalAlerts(firebaseUser.uid, setAlerts);
-  }, [firebaseUser?.uid]);
+    const hospName = hosp?.name || localStats?.name || '';
+    return subscribeToHospitalAlerts(firebaseUser.uid, hospName, setAlerts);
+  }, [firebaseUser?.uid, hosp?.name, localStats?.name]);
 
   // Auto-switch to alerts tab when a new alert comes in for instant demo feedback
   useEffect(() => {

@@ -157,8 +157,12 @@ export async function updateHospitalAlert(id: string, data: Partial<HospitalAler
 
 export function subscribeToHospitalAlerts(
   hospitalId: string,
-  callback: (alerts: HospitalAlert[]) => void,
+  hospitalNameOrCallback: string | ((alerts: HospitalAlert[]) => void),
+  maybeCallback?: (alerts: HospitalAlert[]) => void,
 ) {
+  const hospitalName = typeof hospitalNameOrCallback === 'string' ? hospitalNameOrCallback : undefined;
+  const callback = typeof hospitalNameOrCallback === 'function' ? hospitalNameOrCallback : maybeCallback!;
+
   // BULLETPROOF: Query all and filter client-side to bypass all Firestore index limits
   const q = query(collection(db, 'hospital_alerts'));
   return onSnapshot(q, (snap) => {
@@ -171,7 +175,22 @@ export function subscribeToHospitalAlerts(
           timestamp: getTimestampMillis(data.timestamp),
         } as HospitalAlert;
       })
-      .filter(a => a.hospitalId === hospitalId);
+      .filter(a => {
+        if (a.hospitalId === hospitalId) return true;
+        const targetName = hospitalName?.toLowerCase().trim();
+        const alertName = a.hospitalName?.toLowerCase().trim();
+        if (targetName && alertName) {
+          if (alertName.includes(targetName) || targetName.includes(alertName)) return true;
+          const firstWord = targetName.split(' ')[0];
+          if (firstWord.length > 3 && alertName.includes(firstWord)) return true;
+        }
+        // Specific alias matching for Saveetha Medical College & Hospital
+        const isSaveethaTarget = hospitalId.toLowerCase().includes('saveetha') || targetName?.includes('saveetha');
+        const isSaveethaAlert = a.hospitalId.toLowerCase().includes('saveetha') || alertName?.includes('saveetha');
+        if (isSaveethaTarget && isSaveethaAlert) return true;
+
+        return false;
+      });
       
     // Sort by timestamp descending
     list.sort((a, b) => b.timestamp - a.timestamp);

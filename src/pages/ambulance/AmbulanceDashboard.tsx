@@ -31,6 +31,36 @@ import type {
 // ── Proximity threshold: 200 metres ──────────
 const ARRIVAL_THRESHOLD_KM = 0.2;
 
+function extractPatientCount(text: string): number {
+  if (!text) return 1;
+  const wordToNum: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    single: 1, double: 2, couple: 2, trio: 3
+  };
+
+  // Check digit patterns e.g. "2 patients", "count: 3", "4 casualties", "2 people"
+  const digitMatch = text.match(/(\d+)\s*(?:patient|casualt|victim|person|people|individual|injured|count|case)/i);
+  if (digitMatch && digitMatch[1]) {
+    const parsed = parseInt(digitMatch[1], 10);
+    if (parsed > 0 && parsed <= 50) return parsed;
+  }
+
+  // Check word patterns e.g. "two patients", "three casualties"
+  const wordMatch = text.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|single|double|couple|trio)\s*(?:patient|casualt|victim|person|people|individual|injured|count|case)/i);
+  if (wordMatch && wordMatch[1] && wordToNum[wordMatch[1].toLowerCase()]) {
+    return wordToNum[wordMatch[1].toLowerCase()];
+  }
+
+  // General leading number check e.g. "2, trauma..."
+  const leadingMatch = text.match(/^\s*(\d+)\b/);
+  if (leadingMatch && leadingMatch[1]) {
+    const parsed = parseInt(leadingMatch[1], 10);
+    if (parsed > 0 && parsed <= 50) return parsed;
+  }
+
+  return 1;
+}
+
 export default function AmbulanceDashboard() {
   const { profile, signOut, firebaseUser } = useAuthStore();
   const amb = profile as AmbulanceProfile;
@@ -44,6 +74,8 @@ export default function AmbulanceDashboard() {
   const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
   const [recommendations, setRecommendations] = useState<HospitalRecommendation[]>([]);
   const [voiceNote,       setVoiceNote]       = useState('');
+  const [patientCount,    setPatientCount]    = useState(1);
+  const [voiceCountDetected, setVoiceCountDetected] = useState(false);
   const [bestHosp,        setBestHosp]        = useState<HospitalRecommendation | null>(null);
   const [sending,         setSending]         = useState(false);
   const [sentAlert,       setSentAlert]       = useState(false);
@@ -56,6 +88,17 @@ export default function AmbulanceDashboard() {
   const gps    = useGPS(true);
   const siren  = useSirenAlarm();
   const voice  = useVoice(t => setVoiceNote(t));
+
+  // Sync patient count when voice note updates
+  useEffect(() => {
+    if (voiceNote) {
+      const detected = extractPatientCount(voiceNote);
+      if (detected > 1 || /patient|casualt|victim|person/i.test(voiceNote)) {
+        setPatientCount(detected);
+        setVoiceCountDetected(true);
+      }
+    }
+  }, [voiceNote]);
 
   // Compute distance and ETA for all unassigned incoming emergencies, sorted by distance ascending (least distance first)
   const unassignedAlerts = useMemo(() => {
@@ -243,20 +286,43 @@ export default function AmbulanceDashboard() {
       arrivedRef.current = true;
       setArrivedBanner(true);
 
-      // Auto-load hospital recommendations
+      // Auto-load hospital recommendations based strictly on user location
       const recs = recommendHospitals(
-        gps.location.lat, gps.location.lng,
+        activeEmerg.location.lat,
+        activeEmerg.location.lng,
         hospitals,
-        'trauma',
+        activeEmerg.userBloodGroup || 'trauma',
       );
       setRecommendations(recs);
-      if (recs.length > 0) setBestHosp(recs[0]); // auto-select top pick
+      if (recs.length > 0 && !bestHosp) setBestHosp(recs[0]);
       setTab('hospital');
 
       // Dismiss banner after 5 s
       setTimeout(() => setArrivedBanner(false), 5000);
     }
-  }, [gps.location, activeEmerg, hospitals]);
+  }, [gps.location, activeEmerg, hospitals, bestHosp]);
+
+  // Keep hospital recommendations synced strictly with user location
+  useEffect(() => {
+    if (!activeEmerg || activeEmerg.ambulanceId !== firebaseUser?.uid) {
+      setRecommendations([]);
+      setBestHosp(null);
+      return;
+    }
+    const recs = recommendHospitals(
+      activeEmerg.location.lat,
+      activeEmerg.location.lng,
+      hospitals,
+      activeEmerg.userBloodGroup || '',
+    );
+    setRecommendations(recs);
+    setBestHosp(prev => {
+      if (prev && recs.some(r => r.hospital.uid === prev.hospital.uid)) {
+        return recs.find(r => r.hospital.uid === prev.hospital.uid) || recs[0] || null;
+      }
+      return recs[0] || null;
+    });
+  }, [activeEmerg, hospitals, firebaseUser?.uid]);
 
   const acceptEmergency = useCallback(async (emergency: Emergency) => {
     siren.stop();
@@ -273,12 +339,10 @@ export default function AmbulanceDashboard() {
     }
     setActiveEmerg(emergency);
 
-    // Suggest best hospitals immediately on acceptance
-    const ambLat = gps.location?.lat ?? emergency.location.lat;
-    const ambLng = gps.location?.lng ?? emergency.location.lng;
+    // Suggest best hospitals immediately based strictly on USER location
     const recs = recommendHospitals(
-      ambLat,
-      ambLng,
+      emergency.location.lat,
+      emergency.location.lng,
       hospitals,
       emergency.userBloodGroup || '',
     );
@@ -312,10 +376,11 @@ export default function AmbulanceDashboard() {
     try {
       await createHospitalAlert({
         hospitalId:         bestHosp.hospital.uid,
+        hospitalName:       bestHosp.hospital.name,
         ambulanceId:        firebaseUser.uid,
         ambulanceVehicleNo: amb?.vehicleNo || '',
         emergencyId:        activeEmerg.id,
-        patientCount:       1,
+        patientCount:       patientCount,
         condition:          voiceNote || 'Trauma patient en route',
         etaMinutes:         bestHosp.etaMinutes,
         status:             'en_route',
@@ -329,7 +394,7 @@ export default function AmbulanceDashboard() {
     } finally {
       setSending(false);
     }
-  }, [bestHosp, activeEmerg, firebaseUser, amb?.vehicleNo, voiceNote]);
+  }, [bestHosp, activeEmerg, firebaseUser, amb?.vehicleNo, voiceNote, patientCount]);
 
   const mapMarkers: MapMarker[] = [];
   const ambLat = gps.location?.lat ?? 13.0627;
@@ -787,7 +852,25 @@ export default function AmbulanceDashboard() {
         {/* ── HOSPITAL TAB ───────────────────── */}
         {tab === 'hospital' && (
           <>
-            {sentAlert ? (
+            {!hasActiveMission || !activeEmerg ? (
+              <div className="card p-8 text-center space-y-4 bg-gray-50/80 border border-gray-100 rounded-2xl">
+                <div className="w-16 h-16 bg-gray-100 text-gray-400 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+                  <Building2 className="w-8 h-8" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-gray-800 text-base">No Active Mission Accepted</h4>
+                  <p className="text-gray-500 text-xs max-w-sm mx-auto mt-1 leading-relaxed">
+                    Hospital triage recommendations and live bed availability will automatically activate once you accept an emergency mission and lock onto the patient's location.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setTab('alerts')}
+                  className="btn-primary py-2.5 px-5 text-xs mx-auto inline-flex items-center gap-2"
+                >
+                  <Activity className="w-4 h-4" /> View Live Emergency Alerts ({unassignedAlerts.length})
+                </button>
+              </div>
+            ) : sentAlert ? (
               <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="card p-8 text-center">
                 <CheckCircle className="w-14 h-14 text-green-500 mx-auto mb-3" />
                 <h3 className="font-bold text-gray-900 text-lg">Hospital Notified!</h3>
@@ -805,52 +888,98 @@ export default function AmbulanceDashboard() {
               </motion.div>
             ) : (
               <>
-                {/* Arrival confirmed header */}
-                <div className="card p-4 bg-green-50 border-green-200">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
-                      <Target className="w-5 h-5 text-green-600" />
+                {/* Active Mission Header */}
+                <div className="card p-4 bg-blue-50/70 border border-blue-200/80 rounded-2xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center text-blue-700">
+                        <User className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-gray-900 text-sm">{activeEmerg.userName} (Patient)</p>
+                        <p className="text-xs text-gray-500">
+                          Blood: <span className="font-semibold text-gray-700">{activeEmerg.userBloodGroup || 'Unknown'}</span> · AI suggestions calculated from patient's GPS
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-bold text-green-800 text-sm">Arrived at Destination</p>
-                      <p className="text-green-600 text-xs">AI has selected the best hospital automatically</p>
-                    </div>
+                    {arrivedBanner && (
+                      <span className="badge-green text-[10px] font-bold px-2 py-1 flex items-center gap-1">
+                        <Target className="w-3 h-3" /> Arrived at Scene
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 {/* Voice Update */}
-                <div className="card p-4">
-                  <p className="section-title">Voice Update for Hospital</p>
-                  <p className="text-xs text-gray-400 mb-3">Speak patient details — transcribed and sent automatically</p>
+                <div className="card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="section-title mb-0">Voice Update for Hospital</p>
+                      <p className="text-xs text-gray-400">Speak patient details — transcribed and sent automatically</p>
+                    </div>
+                    {voiceCountDetected && (
+                      <span className="badge-green text-[10px] font-bold">
+                        👥 {patientCount} patient{patientCount > 1 ? 's' : ''} detected
+                      </span>
+                    )}
+                  </div>
+
                   <div className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all ${
                     voice.isListening ? 'border-brand-400 bg-brand-50' : 'border-gray-100 bg-gray-50'
                   }`}>
                     <button
                       onClick={voice.isListening ? voice.stopListening : voice.startListening}
-                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
+                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-all shrink-0 ${
                         voice.isListening ? 'bg-brand-600 text-white animate-pulse shadow-brand' : 'bg-white text-gray-400 border border-gray-200'
                       }`}
                     >
                       {voice.isListening ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
                     </button>
-                    <div className="flex-1">
+                    <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-700">
-                        {voice.isListening ? '🔴 Recording…' : 'Tap to record message'}
+                        {voice.isListening ? '🔴 Recording voice update…' : 'Tap to record message'}
                       </p>
                       {voiceNote
-                        ? <p className="text-xs text-gray-600 mt-1 italic">"{voiceNote}"</p>
-                        : <p className="text-xs text-gray-400">e.g. "1 trauma patient, unconscious, O+ blood"</p>
+                        ? <p className="text-xs text-gray-600 mt-1 italic break-words">"{voiceNote}"</p>
+                        : <p className="text-xs text-gray-400">e.g. "2 trauma casualties, 1 unconscious, O+ blood"</p>
                       }
                     </div>
                     {voiceNote && <Volume2 className="w-4 h-4 text-brand-600 shrink-0" />}
+                  </div>
+
+                  {/* Patient Count Adjuster */}
+                  <div className="flex items-center justify-between bg-white border border-gray-100 p-2.5 rounded-xl text-xs">
+                    <span className="font-semibold text-gray-700 flex items-center gap-1.5">
+                      <User className="w-3.5 h-3.5 text-brand-600" /> Patient Count:
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setPatientCount(c => Math.max(1, c - 1))}
+                        className="w-7 h-7 bg-gray-100 hover:bg-gray-200 text-gray-700 font-black rounded-lg flex items-center justify-center transition-colors"
+                      >
+                        -
+                      </button>
+                      <span className="font-extrabold text-sm text-gray-900 w-5 text-center">{patientCount}</span>
+                      <button
+                        onClick={() => setPatientCount(c => c + 1)}
+                        className="w-7 h-7 bg-brand-600 hover:bg-brand-700 text-white font-black rounded-lg flex items-center justify-center transition-colors"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 {/* AI Recommended Hospitals */}
                 <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <p className="section-title mb-0">AI Hospital Recommendations</p>
-                    <span className="badge-blue text-xs ml-auto">Auto-selected</span>
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <p className="section-title mb-0">Hospitals Near Patient</p>
+                      <p className="text-[11px] text-gray-400">Ranked by proximity to patient & emergency bed availability</p>
+                    </div>
+                    <span className="text-[10px] bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium">
+                      Select any hospital below
+                    </span>
                   </div>
 
                   {recommendations.length === 0 ? (
@@ -862,64 +991,84 @@ export default function AmbulanceDashboard() {
                             transition={{ duration: 1.4, repeat: Infinity, delay: i * 0.2 }} />
                         ))}
                       </div>
-                      <p className="text-gray-400 text-sm">Loading hospital recommendations…</p>
+                      <p className="text-gray-400 text-sm">Evaluating closest hospitals from patient position…</p>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {recommendations.map((rec, idx) => (
-                        <motion.div
-                          key={rec.hospital.uid}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: idx * 0.08 }}
-                          onClick={() => setBestHosp(rec)}
-                          className={`rounded-2xl border-2 p-4 cursor-pointer hover:border-brand-300 transition-colors ${
-                            bestHosp?.hospital.uid === rec.hospital.uid
-                              ? 'border-brand-600 bg-brand-50 shadow-brand'
-                              : 'border-gray-100 bg-white'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                {idx === 0 && <Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500" />}
-                                {bestHosp?.hospital.uid === rec.hospital.uid && (
-                                  <span className="badge-red text-xs">AI Pick</span>
-                                )}
-                                <span className="font-bold text-gray-900 text-sm">{rec.hospital.name}</span>
-                              </div>
-                              <p className="text-xs text-gray-500 mb-2">{rec.hospital.address}</p>
-                              <div className="flex flex-wrap gap-1">
-                                {rec.reasons.slice(0, 2).map((r, i) => (
-                                  <span key={i} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{r}</span>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="text-right ml-3 shrink-0">
-                              <div className="text-2xl font-black text-brand-700">{rec.score}</div>
-                              <p className="text-xs text-gray-400">AI score</p>
-                            </div>
-                          </div>
+                      {recommendations.map((rec, idx) => {
+                        const isAiTopPick = idx === 0;
+                        const isSelectedByDriver = bestHosp?.hospital.uid === rec.hospital.uid;
 
-                          <div className="mt-3 grid grid-cols-3 gap-2">
-                            <div className="bg-white rounded-lg p-2 text-center border border-gray-100">
-                              <Bed className="w-3.5 h-3.5 text-brand-500 mx-auto mb-0.5" />
-                              <p className="text-xs font-bold">{rec.hospital.beds?.emergency?.available ?? '—'}</p>
-                              <p className="text-xs text-gray-400">beds</p>
+                        return (
+                          <motion.div
+                            key={rec.hospital.uid}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: idx * 0.08 }}
+                            onClick={() => setBestHosp(rec)}
+                            className={`rounded-2xl border-2 p-4 cursor-pointer transition-all ${
+                              isSelectedByDriver
+                                ? 'border-brand-600 bg-brand-50/70 shadow-md ring-2 ring-brand-500/20'
+                                : isAiTopPick
+                                ? 'border-amber-300 bg-amber-50/30 hover:border-amber-400'
+                                : 'border-gray-100 bg-white hover:border-gray-300'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                                  {isAiTopPick && (
+                                    <span className="inline-flex items-center gap-1 bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full shadow-xs">
+                                      <Star className="w-3 h-3 fill-white" /> AI RECOMMENDED PICK (OPTIMAL)
+                                    </span>
+                                  )}
+                                  {isSelectedByDriver && (
+                                    <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                                      isAiTopPick
+                                        ? 'bg-brand-600 text-white'
+                                        : 'bg-blue-600 text-white'
+                                    }`}>
+                                      <CheckCircle className="w-3 h-3" />
+                                      {isAiTopPick ? 'AI Pick Selected' : 'Driver Manual Selection'}
+                                    </span>
+                                  )}
+                                  <span className="font-bold text-gray-900 text-sm">{rec.hospital.name}</span>
+                                </div>
+                                <p className="text-xs text-gray-500 mb-2">{rec.hospital.address}</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {rec.reasons.map((r, i) => (
+                                    <span key={i} className="text-xs bg-white/80 border border-gray-200/60 text-gray-700 px-2 py-0.5 rounded-full font-medium">
+                                      {r}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="text-right ml-3 shrink-0">
+                                <div className="text-2xl font-black text-brand-700">{rec.score}</div>
+                                <p className="text-[10px] text-gray-400 uppercase font-semibold">Triage Score</p>
+                              </div>
                             </div>
-                            <div className="bg-white rounded-lg p-2 text-center border border-gray-100">
-                              <Droplets className="w-3.5 h-3.5 text-red-500 mx-auto mb-0.5" />
-                              <p className="text-xs font-bold">{rec.hospital.blood?.Opos ?? '—'}</p>
-                              <p className="text-xs text-gray-400">O+ units</p>
+
+                            <div className="mt-3 grid grid-cols-3 gap-2">
+                              <div className="bg-white rounded-lg p-2 text-center border border-gray-100 shadow-2xs">
+                                <Bed className="w-3.5 h-3.5 text-brand-500 mx-auto mb-0.5" />
+                                <p className="text-xs font-bold">{rec.hospital.beds?.emergency?.available ?? '—'}</p>
+                                <p className="text-[10px] text-gray-400">ER beds</p>
+                              </div>
+                              <div className="bg-white rounded-lg p-2 text-center border border-gray-100 shadow-2xs">
+                                <Droplets className="w-3.5 h-3.5 text-red-500 mx-auto mb-0.5" />
+                                <p className="text-xs font-bold">{rec.hospital.blood?.Opos ?? '—'}</p>
+                                <p className="text-[10px] text-gray-400">O+ units</p>
+                              </div>
+                              <div className="bg-white rounded-lg p-2 text-center border border-gray-100 shadow-2xs">
+                                <Wind className="w-3.5 h-3.5 text-blue-500 mx-auto mb-0.5" />
+                                <p className="text-xs font-bold">{rec.hospital.oxygen?.cylinders ?? '—'}</p>
+                                <p className="text-[10px] text-gray-400">O₂ cyl.</p>
+                              </div>
                             </div>
-                            <div className="bg-white rounded-lg p-2 text-center border border-gray-100">
-                              <Wind className="w-3.5 h-3.5 text-blue-500 mx-auto mb-0.5" />
-                              <p className="text-xs font-bold">{rec.hospital.oxygen?.cylinders ?? '—'}</p>
-                              <p className="text-xs text-gray-400">O₂ cyl.</p>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ))}
+                          </motion.div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
