@@ -657,9 +657,9 @@ export default function AmbulanceDashboard() {
         )}
       </AnimatePresence>
 
-      {/* Incoming Fleet Backup Broadcast Banner from other drivers */}
+      {/* Incoming Fleet Backup Broadcast Banner from other drivers (Active only during accepted mission) */}
       <AnimatePresence>
-        {activeBackupRequests.length > 0 && (
+        {hasActiveMission && activeBackupRequests.length > 0 && activeBackupRequests[0].ambulanceId !== firebaseUser?.uid && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
             className="bg-orange-600 text-white shadow-md">
             <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
@@ -1109,94 +1109,96 @@ export default function AmbulanceDashboard() {
               </div>
             )}
 
-            {/* ── NEARBY AVAILABLE FLEET AMBULANCES (MULTI-UNIT BACKUP) ── */}
-            <div className="mt-4 pt-3 border-t border-gray-100">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
-                    <Ambulance className="w-3.5 h-3.5" />
+            {/* ── NEARBY AVAILABLE FLEET AMBULANCES (MULTI-UNIT BACKUP) - Active only after accepting a request ── */}
+            {hasActiveMission && (
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
+                      <Ambulance className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-xs text-gray-900">Fleet Ambulances Nearby</h3>
+                      <p className="text-[10px] text-gray-400">Mutual aid / Multi-casualty backup</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-bold text-xs text-gray-900">Fleet Ambulances Nearby</h3>
-                    <p className="text-[10px] text-gray-400">Mutual aid / Multi-casualty backup</p>
+                  <div className="flex items-center gap-1.5">
+                    <span className="badge-green text-[9px] font-bold">
+                      {freeAmbulanceCount} Free
+                    </span>
+                    <span className="badge-orange text-[9px] font-bold">
+                      {otherFleetAmbulances.length - freeAmbulanceCount} On Mission
+                    </span>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="badge-green text-[9px] font-bold">
-                    {freeAmbulanceCount} Free
-                  </span>
-                  <span className="badge-orange text-[9px] font-bold">
-                    {otherFleetAmbulances.length - freeAmbulanceCount} On Mission
-                  </span>
-                </div>
-              </div>
 
-              {otherFleetAmbulances.length === 0 ? (
-                <div className="bg-gray-50 p-4 rounded-2xl text-center text-xs text-gray-400">
-                  No other active fleet ambulances detected nearby.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {otherFleetAmbulances.map(unit => {
-                    const isBusy = busyAmbulanceUids.has(unit.uid) || unit.status === 'on_mission';
-                    const dist = gps.location && unit.location
-                      ? haversineKm(gps.location.lat, gps.location.lng, unit.location.lat, unit.location.lng)
-                      : null;
-                    return (
-                      <div
-                        key={unit.uid}
-                        className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
-                          isBusy ? 'bg-orange-50/40 border-orange-200/60' : 'bg-gray-50/80 border-gray-100'
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-xs text-gray-900 truncate">
-                              {unit.vehicleNo || 'Ambulance Unit'}
-                            </span>
-                            {isBusy ? (
-                              <span className="badge-yellow text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse" />
-                                On Mission
+                {otherFleetAmbulances.length === 0 ? (
+                  <div className="bg-gray-50 p-4 rounded-2xl text-center text-xs text-gray-400">
+                    No other active fleet ambulances detected nearby.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {otherFleetAmbulances.map(unit => {
+                      const isBusy = busyAmbulanceUids.has(unit.uid) || unit.status === 'on_mission';
+                      const dist = gps.location && unit.location
+                        ? haversineKm(gps.location.lat, gps.location.lng, unit.location.lat, unit.location.lng)
+                        : null;
+                      return (
+                        <div
+                          key={unit.uid}
+                          className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
+                            isBusy ? 'bg-orange-50/40 border-orange-200/60' : 'bg-gray-50/80 border-gray-100'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs text-gray-900 truncate">
+                                {unit.vehicleNo || 'Ambulance Unit'}
                               </span>
-                            ) : (
-                              <span className="badge-green text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                                Free
-                              </span>
+                              {isBusy ? (
+                                <span className="badge-yellow text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse" />
+                                  On Mission
+                                </span>
+                              ) : (
+                                <span className="badge-green text-[9px] py-0.5 px-1.5 font-bold flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+                                  Free
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-gray-500 mt-0.5">
+                              {unit.driverName || 'Driver'} · {unit.vehicleType || 'Basic Life Support'}
+                            </p>
+                            {dist !== null && (
+                              <p className="text-[10px] text-brand-600 font-semibold mt-0.5">
+                                {dist < 1 ? `${Math.round(dist * 1000)} m away` : `${dist.toFixed(1)} km away`}
+                              </p>
                             )}
                           </div>
-                          <p className="text-[11px] text-gray-500 mt-0.5">
-                            {unit.driverName || 'Driver'} · {unit.vehicleType || 'Basic Life Support'}
-                          </p>
-                          {dist !== null && (
-                            <p className="text-[10px] text-brand-600 font-semibold mt-0.5">
-                              {dist < 1 ? `${Math.round(dist * 1000)} m away` : `${dist.toFixed(1)} km away`}
-                            </p>
+
+                          {unit.phone ? (
+                            <a
+                              href={`tel:${unit.phone}`}
+                              className={`btn-primary py-2 px-3 text-xs flex items-center gap-1.5 font-bold shrink-0 rounded-xl shadow-sm ${
+                                isBusy
+                                  ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                                  : 'bg-green-600 hover:bg-green-700 text-white'
+                              }`}
+                            >
+                              <Phone className="w-3.5 h-3.5" />
+                              {isBusy ? 'Contact Unit' : 'Call Backup'}
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-gray-400">No Contact</span>
                           )}
                         </div>
-
-                        {unit.phone ? (
-                          <a
-                            href={`tel:${unit.phone}`}
-                            className={`btn-primary py-2 px-3 text-xs flex items-center gap-1.5 font-bold shrink-0 rounded-xl shadow-sm ${
-                              isBusy
-                                ? 'bg-orange-600 hover:bg-orange-700 text-white'
-                                : 'bg-green-600 hover:bg-green-700 text-white'
-                            }`}
-                          >
-                            <Phone className="w-3.5 h-3.5" />
-                            {isBusy ? 'Contact Unit' : 'Call Backup'}
-                          </a>
-                        ) : (
-                          <span className="text-[10px] text-gray-400">No Contact</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

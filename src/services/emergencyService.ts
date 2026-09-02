@@ -248,13 +248,15 @@ export function subscribeToAmbulanceBackupRequests(
 ) {
   const q = query(collection(db, 'ambulance_backup_requests'));
   return onSnapshot(q, (snap) => {
+    const now = Date.now();
+    const twentyMinsAgo = now - 20 * 60 * 1000;
     const list = snap.docs
       .map(d => ({
         id: d.id,
         ...d.data(),
         timestamp: getTimestampMillis(d.data().timestamp),
       }))
-      .filter((r: any) => r.status === 'active');
+      .filter((r: any) => r.status === 'active' && r.timestamp >= twentyMinsAgo);
     list.sort((a: any, b: any) => b.timestamp - a.timestamp);
     callback(list);
   }, (error) => {

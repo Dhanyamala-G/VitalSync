@@ -19,12 +19,12 @@ export interface ShakeState {
 }
 
 // ── Sensor threshold constants ────────────────
-const SHAKE_THRESHOLD = 28;   // m/s² — requires deliberate physical shaking
-const SHAKE_MIN_COUNT = 3;    // 3 consecutive motion spikes across frames
+const SHAKE_THRESHOLD = 18;   // m/s² — sensitive & responsive physical shaking
+const SHAKE_MIN_COUNT = 2;    // 2 motion spikes across frames
 const STILL_THRESHOLD = 1.5;  // m/s² — below this = truly still
 const STILL_MIN_SEC   = 0.5;  // seconds of stillness to confirm
-const COOLDOWN_MS     = 4000; // ms before shake can re-trigger
-const WARMUP_MS       = 2500; // ms startup warmup: ignore initial browser sensor artifacts on refresh
+const COOLDOWN_MS     = 3000; // ms before shake can re-trigger
+const WARMUP_MS       = 1500; // ms startup warmup: ignore initial browser sensor artifacts on refresh
 
 export function useShakeDetector(
   onShake: (maxMagnitude: number) => void,
