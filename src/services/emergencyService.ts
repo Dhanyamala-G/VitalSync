@@ -155,6 +155,32 @@ export async function updateHospitalAlert(id: string, data: Partial<HospitalAler
   await updateDoc(doc(db, 'hospital_alerts', id), data);
 }
 
+export async function markPatientTreatedAndDismissAlert(
+  alertId: string,
+  emergencyId: string,
+  report: import('../types').PatientTreatmentReport
+): Promise<void> {
+  // Update hospital alert to 'treated' with complete patient treatment report attached
+  await updateDoc(doc(db, 'hospital_alerts', alertId), {
+    status: 'treated',
+    treatedAt: Date.now(),
+    treatmentReport: report,
+  });
+
+  // Resolve and archive emergency in emergencies collection
+  if (emergencyId) {
+    try {
+      await updateDoc(doc(db, 'emergencies', emergencyId), {
+        status: 'resolved',
+        resolvedAt: Date.now(),
+        treatmentReport: report,
+      });
+    } catch (e) {
+      console.warn("Could not update emergency status on treatment:", e);
+    }
+  }
+}
+
 export function subscribeToHospitalAlerts(
   hospitalId: string,
   hospitalNameOrCallback: string | ((alerts: HospitalAlert[]) => void),

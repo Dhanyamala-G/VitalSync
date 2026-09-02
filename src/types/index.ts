@@ -135,6 +135,35 @@ export interface Doctor {
   specialty: string;
 }
 
+// ─── Treatment Report ─────────────────────────
+export interface PatientTreatmentReport {
+  reportId: string;
+  emergencyId: string;
+  patientName: string;
+  patientAge?: number;
+  patientBloodGroup: string;
+  patientPhone: string;
+  admittedHospital: string;
+  attendingDoctor: string;
+  triageLevel: string;
+  vitals: {
+    bloodPressure: string;
+    heartRate: string;
+    spO2: string;
+    temperature: string;
+  };
+  interventions: string[];
+  medicationsAdministered: string[];
+  clinicalSummary: string;
+  patientDisposition: string;
+  treatedAt: number;
+  dischargeNotes: string;
+  respondingAmbulance?: {
+    vehicleNo: string;
+    driverName?: string;
+  };
+}
+
 // ─── Hospital Alert ───────────────────────────
 export interface HospitalAlert {
   id: string;
@@ -146,8 +175,10 @@ export interface HospitalAlert {
   patientCount: number;
   condition: string;          // voice transcription text
   etaMinutes: number;
-  status: 'en_route' | 'arrived';
+  status: 'en_route' | 'arrived' | 'treated';
   timestamp: number;
+  treatedAt?: number;
+  treatmentReport?: PatientTreatmentReport;
 }
 
 // ─── AI Result ────────────────────────────────

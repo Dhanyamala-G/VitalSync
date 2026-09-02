@@ -291,11 +291,24 @@ function mergeHospitals(live: HospitalProfile[], registered: HospitalProfile[]):
   registered.forEach(r => {
     const existing = map.get(r.name.toLowerCase());
     if (existing) {
-      map.set(r.name.toLowerCase(), { ...r, ...existing, uid: r.uid || existing.uid });
+      map.set(r.name.toLowerCase(), { ...existing, ...r, uid: r.uid || existing.uid });
     } else {
       map.set(r.name.toLowerCase(), r);
     }
   });
+
+  // Always ensure Saveetha Medical College is anchored to its accurate Thandalam coordinates
+  const saveethaKey = Array.from(map.keys()).find(k => k.includes('saveetha'));
+  if (saveethaKey) {
+    const s = map.get(saveethaKey)!;
+    map.set(saveethaKey, {
+      ...s,
+      name: 'Saveetha Medical College and Hospital',
+      address: 'Saveetha Nagar, Chennai-Bengaluru National Highway (NH 48), Thandalam, Kanchipuram / Chennai - 602105',
+      location: { lat: 13.0280, lng: 80.0165 },
+    });
+  }
+
   return Array.from(map.values());
 }
 

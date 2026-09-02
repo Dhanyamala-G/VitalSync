@@ -5,7 +5,7 @@ import {
   Activity, Navigation, Building2, Volume2,
   Clock, CheckCircle, CheckCircle2, Mic, MicOff,
   Star, Bed, Droplets, Wind, AlertTriangle,
-  Target, User, Sparkles, Radio, X,
+  Target, User, Sparkles, Radio, X, Power,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useGPS } from '../../hooks/useGPS';
@@ -16,6 +16,7 @@ import type { MapMarker } from '../../components/MapView';
 import {
   subscribeToEmergencies, subscribeToAmbulances, updateEmergency,
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
+  updateAmbulanceStatus,
   createAmbulanceBackupRequest, subscribeToAmbulanceBackupRequests,
 } from '../../services/emergencyService';
 import { recommendHospitals, haversineKm, fetchLiveNearbyHospitals } from '../../services/aiService';
@@ -79,6 +80,17 @@ export default function AmbulanceDashboard() {
   const [arrivedBanner,   setArrivedBanner]   = useState(false);
   const [distanceKm,      setDistanceKm]      = useState<number | null>(null);
   const [hospitalHandoverDone, setHospitalHandoverDone] = useState(false);
+  const [isFleetUnitDisabled, setIsFleetUnitDisabled]   = useState(false);
+  const [lastHandoverHospital, setLastHandoverHospital] = useState('');
+
+  // Sync disabled state with profile status from Firestore
+  useEffect(() => {
+    if (amb?.status === 'offline') {
+      setIsFleetUnitDisabled(true);
+    } else if (amb?.status === 'available' || amb?.status === 'on_mission') {
+      setIsFleetUnitDisabled(false);
+    }
+  }, [amb?.status]);
 
   // Fleet Backup & Mutual Aid State
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -205,11 +217,11 @@ export default function AmbulanceDashboard() {
         e => e.ambulanceId === firebaseUser?.uid && ['dispatched', 'confirmed', 'en_route'].includes(e.status)
       );
 
-      if (activeEmerg || myActiveMission) {
+      if (activeEmerg || myActiveMission || isFleetUnitDisabled) {
         setShowIncomingModal(false);
         siren.stop();
       } else {
-        const unassigned = list.filter(e => e.status === 'confirmed' && !e.ambulanceId);
+        const unassigned = list.filter(e => e.status === 'confirmed' && !e.ambulanceId && !declinedIds.has(e.id));
         if (unassigned.length > 0) {
           setShowIncomingModal(true);
           siren.play();
@@ -222,7 +234,7 @@ export default function AmbulanceDashboard() {
       prevCountRef.current = list.length;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeEmerg, firebaseUser?.uid]);
+  }, [activeEmerg, firebaseUser?.uid, isFleetUnitDisabled, declinedIds]);
 
   // Dynamically discover and update live nearby hospitals based on current GPS location
   useEffect(() => {
@@ -341,12 +353,16 @@ export default function AmbulanceDashboard() {
     arrivedRef.current = false;
     setDistanceKm(null);
     setSentAlert(false);
+    setIsFleetUnitDisabled(false);
     await updateEmergency(emergency.id, {
       status:       'dispatched',
       ambulanceId:  firebaseUser?.uid,
     });
-    if (firebaseUser?.uid && gps.location) {
-      await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+    if (firebaseUser?.uid) {
+      await updateAmbulanceStatus(firebaseUser.uid, 'on_mission');
+      if (gps.location) {
+        await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+      }
     }
     setActiveEmerg(emergency);
 
@@ -390,15 +406,30 @@ export default function AmbulanceDashboard() {
     return haversineKm(ambLat, ambLng, bestHosp.hospital.location.lat, bestHosp.hospital.location.lng);
   }, [gps.location, bestHosp]);
 
+  // Handover is ONLY enabled once hospital location matches ambulance location (~10-15m / 0.015 km)
+  const isNearHospital = useMemo(() => {
+    if (distToTargetHospital === null) return false;
+    return distToTargetHospital <= 0.015;
+  }, [distToTargetHospital]);
+
   const completeHospitalHandover = useCallback(async () => {
     if (!activeEmerg) return;
+    if (!isNearHospital) {
+      console.warn("Handover blocked: ambulance has not reached hospital location yet.");
+      return;
+    }
+    const targetHospName = bestHosp?.hospital.name || 'Hospital ER';
     try {
       await updateEmergency(activeEmerg.id, {
         status: 'resolved',
         resolvedAt: Date.now(),
       });
-      if (firebaseUser?.uid && gps.location) {
-        await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+      if (firebaseUser?.uid) {
+        // Disable fleet unit upon hospital handover (sets status to offline)
+        await updateAmbulanceStatus(firebaseUser.uid, 'offline');
+        if (gps.location) {
+          await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+        }
       }
     } catch (err) {
       console.error("Complete handover error:", err);
@@ -408,18 +439,25 @@ export default function AmbulanceDashboard() {
       setSentAlert(false);
       setArrivedBanner(false);
       setHospitalHandoverDone(true);
+      setIsFleetUnitDisabled(true);
+      setLastHandoverHospital(targetHospName);
       setTab('alerts');
       setTimeout(() => setHospitalHandoverDone(false), 8000);
     }
-  }, [activeEmerg, firebaseUser?.uid, gps.location]);
+  }, [activeEmerg, isNearHospital, bestHosp, firebaseUser?.uid, gps.location]);
+
+  const reEnableFleetUnit = useCallback(async () => {
+    if (firebaseUser?.uid) {
+      await updateAmbulanceStatus(firebaseUser.uid, 'available');
+    }
+    setIsFleetUnitDisabled(false);
+  }, [firebaseUser?.uid]);
 
   // Auto-handover when ambulance gets within ~10-15 metres (0.015 km) of hospital
   useEffect(() => {
-    if (!isTransitToHospital || distToTargetHospital === null) return;
-    if (distToTargetHospital <= 0.015) {
-      completeHospitalHandover();
-    }
-  }, [distToTargetHospital, isTransitToHospital, completeHospitalHandover]);
+    if (!isTransitToHospital || !isNearHospital) return;
+    completeHospitalHandover();
+  }, [isNearHospital, isTransitToHospital, completeHospitalHandover]);
 
   const sendHospitalAlert = useCallback(async () => {
     if (!bestHosp || !activeEmerg || !firebaseUser) return;
@@ -482,14 +520,31 @@ export default function AmbulanceDashboard() {
     mapMarkers.push({
       lat: gps.location.lat,
       lng: gps.location.lng,
-      label: hasActiveMission
+      label: isFleetUnitDisabled
+        ? `You: ${amb?.vehicleNo || 'Ambulance'} (Disabled - Post-Handover)`
+        : isTransitToHospital
+        ? `You: ${amb?.vehicleNo || 'Ambulance'} (Patient Onboard → ${bestHosp?.hospital.name || 'Hospital'})`
+        : hasActiveMission
         ? `You: ${amb?.vehicleNo || 'Ambulance'} (On Mission)`
         : `You: ${amb?.vehicleNo || 'Ambulance'} (Standby Free)`,
-      color: hasActiveMission ? 'orange' : 'blue',
-      pulse: true,
-      iconText: '🚑',
-      category: hasActiveMission ? 'Your Unit (Dispatched & En Route)' : 'Your Unit (Standby / Available)',
-      details: `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Driver: ${amb?.driverName || 'You'}`,
+      color: isFleetUnitDisabled ? 'gray' : isTransitToHospital ? 'orange' : hasActiveMission ? 'orange' : 'blue',
+      pulse: !isFleetUnitDisabled && (hasActiveMission || isTransitToHospital),
+      iconText: isFleetUnitDisabled ? '⛔' : '🚑',
+      category: isFleetUnitDisabled
+        ? 'Your Unit (Disabled / Post-Handover)'
+        : isTransitToHospital
+        ? 'Your Unit (In Transit to ER)'
+        : hasActiveMission
+        ? 'Your Unit (Dispatched & En Route)'
+        : 'Your Unit (Standby / Available)',
+      details: isFleetUnitDisabled
+        ? `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Status: Disabled Post-Handover`
+        : isTransitToHospital
+        ? `Destination: ${bestHosp?.hospital.name} · ER ETA: ~${Math.max(1, Math.round((distToTargetHospital ?? 1) * 2.4))}m`
+        : `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Driver: ${amb?.driverName || 'You'}`,
+      distance: isTransitToHospital && distToTargetHospital !== null
+        ? `${formatDistance(distToTargetHospital)} to ER`
+        : undefined,
     });
   }
   // ONLY show patient marker if mission has been accepted by this driver
@@ -525,21 +580,24 @@ export default function AmbulanceDashboard() {
     }
   });
   
-  // Show nearby fleet ambulances (Green for Free, Orange for On Mission)
+  // Show nearby fleet ambulances (Green for Free, Orange for On Mission, Gray for Disabled)
   otherFleetAmbulances.forEach(a => {
     const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+    const isOffline = a.status === 'offline';
     const dist = haversineKm(ambLat, ambLng, a.location!.lat, a.location!.lng);
     mapMarkers.push({
       lat: a.location!.lat,
       lng: a.location!.lng,
-      label: isBusy
+      label: isOffline
+        ? `⛔ Disabled: ${a.vehicleNo} (${a.driverName || 'Driver'})`
+        : isBusy
         ? `🟠 On Mission: ${a.vehicleNo} (${a.driverName || 'Driver'})`
         : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
-      color: isBusy ? 'orange' : 'green',
+      color: isOffline ? 'gray' : isBusy ? 'orange' : 'green',
       pulse: isBusy,
-      iconText: isBusy ? '🚨' : '🚑',
-      category: isBusy ? 'Fleet Ambulance (On Mission)' : 'Fleet Ambulance (Standby Free)',
-      details: `Vehicle: ${a.vehicleNo} · Driver: ${a.driverName || 'Driver'} (${a.vehicleType})`,
+      iconText: isOffline ? '⛔' : isBusy ? '🚨' : '🚑',
+      category: isOffline ? 'Fleet Ambulance (Disabled / Post-Handover)' : isBusy ? 'Fleet Ambulance (On Mission)' : 'Fleet Ambulance (Standby Free)',
+      details: `Vehicle: ${a.vehicleNo} · Driver: ${a.driverName || 'Driver'} (${a.vehicleType}) · Status: ${isOffline ? 'Disabled' : isBusy ? 'On Mission' : 'Available'}`,
       distance: `${dist.toFixed(1)} km away`,
     });
   });
@@ -565,8 +623,16 @@ export default function AmbulanceDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : visibleAlerts.length > 0 ? 'badge-red animate-pulse' : 'badge-green'}`}>
-            {hasActiveMission ? 'Mission Active' : visibleAlerts.length > 0 ? `${visibleAlerts.length} Alert` : 'Standby'}
+          <span className={`badge ${
+            isFleetUnitDisabled
+              ? 'bg-gray-100 text-gray-700 font-bold border border-gray-300'
+              : hasActiveMission
+              ? 'badge-green font-bold'
+              : visibleAlerts.length > 0
+              ? 'badge-red animate-pulse'
+              : 'badge-green'
+          }`}>
+            {isFleetUnitDisabled ? '⛔ Unit Disabled' : hasActiveMission ? 'Mission Active' : visibleAlerts.length > 0 ? `${visibleAlerts.length} Alert` : 'Standby'}
           </span>
           <button onClick={signOut} className="btn-ghost p-2"><LogOut className="w-4 h-4" /></button>
         </div>
@@ -652,9 +718,24 @@ export default function AmbulanceDashboard() {
               </div>
               <button
                 onClick={completeHospitalHandover}
-                className="btn-primary py-1.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black rounded-xl shrink-0 shadow-sm"
+                disabled={!isNearHospital}
+                title={isNearHospital ? "Complete ER Handover" : `Handover locked until arrival at hospital (${formatDistance(distToTargetHospital ?? undefined)} away)`}
+                className={`py-1.5 px-3 text-xs font-black rounded-xl shrink-0 shadow-sm flex items-center gap-1.5 transition-all ${
+                  isNearHospital
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white animate-pulse cursor-pointer'
+                    : 'bg-white/15 text-purple-200 cursor-not-allowed border border-white/20 opacity-75'
+                }`}
               >
-                Complete Handover
+                {isNearHospital ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Complete Handover
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[10px]">🔒 Handover Locked</span>
+                  </>
+                )}
               </button>
             </div>
           </motion.div>
@@ -697,11 +778,48 @@ export default function AmbulanceDashboard() {
         {/* ── ALERTS TAB ─────────────────────── */}
         {tab === 'alerts' && (
           <div>
+            {/* Disabled Unit Status Banner */}
+            {isFleetUnitDisabled && !hasActiveMission && (
+              <div className="card p-5 bg-gradient-to-r from-gray-950 via-gray-900 to-gray-950 text-white shadow-xl border-2 border-red-500/50 rounded-3xl mb-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center text-2xl shrink-0 shadow-inner">
+                      ⛔
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="badge bg-red-500 text-white text-[10px] font-black uppercase tracking-wider">
+                          FLEET UNIT DISABLED
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-semibold">Post-Handover Status</span>
+                      </div>
+                      <h3 className="font-extrabold text-base text-white mt-1">
+                        {amb?.vehicleNo || 'Ambulance Unit'} is Disabled
+                      </h3>
+                      <p className="text-xs text-gray-300 mt-0.5 leading-relaxed">
+                        Patient has been successfully admitted to {lastHandoverHospital || 'Hospital ER'}. This unit is currently disabled from receiving emergency dispatches.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-1">
+                  <button
+                    onClick={reEnableFleetUnit}
+                    className="btn-primary w-full py-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl shadow-lg flex items-center justify-center gap-2"
+                  >
+                    <Power className="w-4 h-4 text-white" />
+                    Re-Enable Fleet Unit (Go Online & Available)
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between mb-3">
               <p className="section-title mb-0">Live Alerts</p>
               {visibleAlerts.length > 0 && (
-                <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : 'badge-red animate-pulse'}`}>
-                  {hasActiveMission ? '1 Active Mission' : `${visibleAlerts.length} in queue`}
+                <span className={`badge ${hasActiveMission ? 'badge-green font-bold' : isFleetUnitDisabled ? 'badge-gray font-bold' : 'badge-red animate-pulse'}`}>
+                  {hasActiveMission ? '1 Active Mission' : isFleetUnitDisabled ? 'Unit Disabled' : `${visibleAlerts.length} in queue`}
                 </span>
               )}
             </div>
@@ -1143,19 +1261,51 @@ export default function AmbulanceDashboard() {
                   zoom={13}
                 />
 
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <button
-                    onClick={completeHospitalHandover}
-                    className="btn-primary flex-1 py-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-md flex items-center justify-center gap-1.5"
-                  >
-                    <CheckCircle2 className="w-4 h-4" /> Complete ER Handover (10m away)
-                  </button>
-                  <button
-                    onClick={() => setShowBackupModal(true)}
-                    className="btn-secondary py-3 px-4 text-xs border-orange-200 text-orange-700 hover:bg-orange-50 font-bold rounded-xl flex items-center gap-1 shrink-0"
-                  >
-                    <Radio className="w-4 h-4 text-orange-600" /> Request Backup
-                  </button>
+                <div className="space-y-2 pt-1">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={completeHospitalHandover}
+                      disabled={!isNearHospital}
+                      className={`flex-1 py-3 text-xs font-black rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all ${
+                        isNearHospital
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white animate-bounce cursor-pointer'
+                          : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200 opacity-80'
+                      }`}
+                    >
+                      {isNearHospital ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-white" />
+                          Complete ER Handover (At Hospital ER)
+                        </>
+                      ) : (
+                        <>
+                          <span>🔒 Handover Disabled ({formatDistance(distToTargetHospital ?? undefined)} from ER)</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setShowBackupModal(true)}
+                      className="btn-secondary py-3 px-4 text-xs border-orange-200 text-orange-700 hover:bg-orange-50 font-bold rounded-xl flex items-center gap-1 shrink-0"
+                    >
+                      <Radio className="w-4 h-4 text-orange-600" /> Request Backup
+                    </button>
+                  </div>
+                  
+                  {!isNearHospital ? (
+                    <div className="p-2.5 rounded-xl bg-purple-50 border border-purple-100 flex items-center gap-2 text-[11px] text-purple-800">
+                      <span className="w-2 h-2 rounded-full bg-purple-500 animate-ping shrink-0" />
+                      <span>
+                        <strong>Handover Locked:</strong> Unlocks once the ambulance location matches {bestHosp?.hospital.name || 'the hospital ER'} (~10m).
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-2 text-[11px] text-emerald-800">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>
+                        <strong>At Hospital ER:</strong> Ambulance GPS matches hospital location. Handover is unlocked.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             ) : (
@@ -1414,13 +1564,31 @@ export default function AmbulanceDashboard() {
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">
+                <div className="flex items-center justify-between text-xs py-2 border-b border-gray-50">
                   <span className="text-gray-400 flex items-center gap-1.5 font-medium">
                     <Activity className="w-3.5 h-3.5 text-green-600" /> Operational Status
                   </span>
-                  <span className={`badge ${hasActiveMission ? 'badge-yellow font-bold' : 'badge-green font-bold'}`}>
-                    {hasActiveMission ? 'On Mission (Dispatched)' : 'Available (Standby)'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`badge ${
+                      isFleetUnitDisabled
+                        ? 'bg-gray-100 text-gray-700 font-bold border border-gray-300'
+                        : hasActiveMission
+                        ? 'badge-yellow font-bold'
+                        : 'badge-green font-bold'
+                    }`}>
+                      {isFleetUnitDisabled ? '⛔ Disabled (Post-Handover)' : hasActiveMission ? 'On Mission (Dispatched)' : 'Available (Standby)'}
+                    </span>
+                    <button
+                      onClick={isFleetUnitDisabled ? reEnableFleetUnit : () => updateAmbulanceStatus(firebaseUser!.uid, 'offline').then(() => setIsFleetUnitDisabled(true))}
+                      className={`text-[10px] px-2.5 py-1 rounded-lg font-bold transition-colors ${
+                        isFleetUnitDisabled
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                          : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                      }`}
+                    >
+                      {isFleetUnitDisabled ? 'Re-Enable Unit' : 'Disable Unit'}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between text-xs py-1 border-b border-gray-50">

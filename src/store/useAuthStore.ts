@@ -14,6 +14,7 @@ import {
   doc,
   setDoc,
   getDoc,
+  updateDoc,
   serverTimestamp,
 } from 'firebase/firestore';
 import { auth, db } from '../firebase/config';
@@ -130,7 +131,9 @@ export const useAuthStore = create<AuthState>()(
               const snap = await getDoc(doc(db, 'users', user.uid));
               if (snap.exists()) {
                 const profile = snap.data() as Profile;
-                set({ firebaseUser: user, profile, role: profile.role, initialized: true });
+                const demoData = user.email ? getDemoProfileByEmail(user.email) : null;
+                const mergedProfile = (demoData ? { ...profile, ...demoData } : profile) as Profile;
+                set({ firebaseUser: user, profile: mergedProfile, role: mergedProfile.role, initialized: true });
               } else {
                 set({ firebaseUser: user, initialized: true });
               }
@@ -171,10 +174,10 @@ export const useAuthStore = create<AuthState>()(
 
           const user = cred.user;
           let snap = await getDoc(doc(db, 'users', user.uid));
+          const demoData = getDemoProfileByEmail(email);
           
           // If Firestore profile document doesn't exist yet, auto-populate it
           if (!snap.exists()) {
-            const demoData = getDemoProfileByEmail(email);
             const defaultRole: UserRole = email.includes('hosp') ? 'hospital' : email.includes('tn') ? 'ambulance' : 'user';
             const initialProfile: Profile = {
               uid: user.uid,
@@ -189,10 +192,24 @@ export const useAuthStore = create<AuthState>()(
               createdAt: serverTimestamp(),
             });
             snap = await getDoc(doc(db, 'users', user.uid));
+          } else if (demoData) {
+            // Force sync the latest address and coordinates to Firestore
+            const dataToSync: Record<string, any> = {};
+            if ('name' in demoData && demoData.name) dataToSync.name = demoData.name;
+            if ('address' in demoData && demoData.address) dataToSync.address = demoData.address;
+            if ('location' in demoData && demoData.location) dataToSync.location = demoData.location;
+            if ('specialties' in demoData && (demoData as HospitalProfile).specialties) {
+              dataToSync.specialties = (demoData as HospitalProfile).specialties;
+            }
+            if (Object.keys(dataToSync).length > 0) {
+              await updateDoc(doc(db, 'users', user.uid), dataToSync);
+            }
+            snap = await getDoc(doc(db, 'users', user.uid));
           }
 
-          const profile = snap.data() as Profile;
-          set({ firebaseUser: user, profile, role: profile.role, loading: false });
+          const profileData = snap.data() as Profile;
+          const mergedProfile = (demoData ? { ...profileData, ...demoData } : profileData) as Profile;
+          set({ firebaseUser: user, profile: mergedProfile, role: mergedProfile.role, loading: false });
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : 'Sign in failed';
           set({ error: msg, loading: false });
