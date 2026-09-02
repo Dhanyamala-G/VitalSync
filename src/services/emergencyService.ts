@@ -199,3 +199,39 @@ export function subscribeToHospitalAlerts(
     console.error("subscribeToHospitalAlerts query error:", error);
   });
 }
+
+export async function createAmbulanceBackupRequest(data: {
+  ambulanceId: string;
+  vehicleNo: string;
+  driverName: string;
+  phone: string;
+  location: { lat: number; lng: number };
+  reason: string;
+  emergencyId?: string | null;
+}): Promise<string> {
+  const ref = await addDoc(collection(db, 'ambulance_backup_requests'), {
+    ...data,
+    status: 'active',
+    timestamp: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export function subscribeToAmbulanceBackupRequests(
+  callback: (requests: any[]) => void
+) {
+  const q = query(collection(db, 'ambulance_backup_requests'));
+  return onSnapshot(q, (snap) => {
+    const list = snap.docs
+      .map(d => ({
+        id: d.id,
+        ...d.data(),
+        timestamp: getTimestampMillis(d.data().timestamp),
+      }))
+      .filter((r: any) => r.status === 'active');
+    list.sort((a: any, b: any) => b.timestamp - a.timestamp);
+    callback(list);
+  }, (error) => {
+    console.error("subscribeToAmbulanceBackupRequests query error:", error);
+  });
+}

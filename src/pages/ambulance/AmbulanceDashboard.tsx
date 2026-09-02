@@ -1,16 +1,11 @@
-// ─────────────────────────────────────────────
-//  Ambulance Dashboard
-//  AUTO-TRIGGER: GPS proximity < 200m → auto hospital recommendation
-//  No manual "Find Hospital" button
-// ─────────────────────────────────────────────
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Ambulance, Bell, MapPin, LogOut, Phone,
   Activity, Navigation, Building2, Volume2,
-  Clock, CheckCircle, Mic, MicOff,
+  Clock, CheckCircle, CheckCircle2, Mic, MicOff,
   Star, Bed, Droplets, Wind, AlertTriangle,
-  Target, Zap, User, Sparkles,
+  Target, User, Sparkles, Radio, X,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useGPS } from '../../hooks/useGPS';
@@ -21,6 +16,7 @@ import type { MapMarker } from '../../components/MapView';
 import {
   subscribeToEmergencies, subscribeToAmbulances, updateEmergency,
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
+  createAmbulanceBackupRequest, subscribeToAmbulanceBackupRequests,
 } from '../../services/emergencyService';
 import { recommendHospitals, haversineKm, fetchLiveNearbyHospitals } from '../../services/aiService';
 import { MOCK_HOSPITALS } from '../../utils/mockData';
@@ -82,6 +78,15 @@ export default function AmbulanceDashboard() {
   const [sentAlert,       setSentAlert]       = useState(false);
   const [arrivedBanner,   setArrivedBanner]   = useState(false);
   const [distanceKm,      setDistanceKm]      = useState<number | null>(null);
+  const [hospitalHandoverDone, setHospitalHandoverDone] = useState(false);
+
+  // Fleet Backup & Mutual Aid State
+  const [showBackupModal, setShowBackupModal] = useState(false);
+  const [backupReason, setBackupReason] = useState('Extra Ambulance Needed (Multi-Casualty)');
+  const [backupSuccess, setBackupSuccess] = useState(false);
+  const [sendingBackup, setSendingBackup] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [activeBackupRequests, setActiveBackupRequests] = useState<any[]>([]);
 
   const prevCountRef  = useRef(0);
   const arrivedRef    = useRef(false);   // prevent double-trigger
@@ -100,6 +105,11 @@ export default function AmbulanceDashboard() {
       }
     }
   }, [voiceNote]);
+
+  // Subscribe to real-time fleet backup requests from other ambulance drivers
+  useEffect(() => {
+    return subscribeToAmbulanceBackupRequests(setActiveBackupRequests);
+  }, []);
 
   // Compute distance and ETA for all unassigned incoming emergencies, sorted by distance ascending (least distance first)
   const unassignedAlerts = useMemo(() => {
@@ -371,6 +381,46 @@ export default function AmbulanceDashboard() {
     }
   }, [siren, activeEmerg, unassignedAlerts.length]);
 
+  const isTransitToHospital = !!(activeEmerg && (sentAlert || activeEmerg.status === 'en_route'));
+
+  const distToTargetHospital = useMemo(() => {
+    if (!bestHosp?.hospital.location) return null;
+    const ambLat = gps.location?.lat ?? 13.0627;
+    const ambLng = gps.location?.lng ?? 80.2545;
+    return haversineKm(ambLat, ambLng, bestHosp.hospital.location.lat, bestHosp.hospital.location.lng);
+  }, [gps.location, bestHosp]);
+
+  const completeHospitalHandover = useCallback(async () => {
+    if (!activeEmerg) return;
+    try {
+      await updateEmergency(activeEmerg.id, {
+        status: 'resolved',
+        resolvedAt: Date.now(),
+      });
+      if (firebaseUser?.uid && gps.location) {
+        await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
+      }
+    } catch (err) {
+      console.error("Complete handover error:", err);
+    } finally {
+      setActiveEmerg(null);
+      setBestHosp(null);
+      setSentAlert(false);
+      setArrivedBanner(false);
+      setHospitalHandoverDone(true);
+      setTab('alerts');
+      setTimeout(() => setHospitalHandoverDone(false), 8000);
+    }
+  }, [activeEmerg, firebaseUser?.uid, gps.location]);
+
+  // Auto-handover when ambulance gets within ~10-15 metres (0.015 km) of hospital
+  useEffect(() => {
+    if (!isTransitToHospital || distToTargetHospital === null) return;
+    if (distToTargetHospital <= 0.015) {
+      completeHospitalHandover();
+    }
+  }, [distToTargetHospital, isTransitToHospital, completeHospitalHandover]);
+
   const sendHospitalAlert = useCallback(async () => {
     if (!bestHosp || !activeEmerg || !firebaseUser) return;
     setSending(true);
@@ -388,14 +438,41 @@ export default function AmbulanceDashboard() {
         timestamp:          Date.now(),
       });
       await updateEmergency(activeEmerg.id, {
-        hospitalId: bestHosp.hospital.uid,
-        status:     'arrived',
+        hospitalId:   bestHosp.hospital.uid,
+        hospitalName: bestHosp.hospital.name,
+        status:       'en_route',
       });
       setSentAlert(true);
+      setTab('map'); // Keep map navigation active and visible!
     } finally {
       setSending(false);
     }
   }, [bestHosp, activeEmerg, firebaseUser, amb?.vehicleNo, voiceNote, patientCount]);
+
+  const handleSendBackupRequest = async () => {
+    if (!firebaseUser) return;
+    setSendingBackup(true);
+    try {
+      await createAmbulanceBackupRequest({
+        ambulanceId: firebaseUser.uid,
+        vehicleNo: amb?.vehicleNo || 'Ambulance Unit',
+        driverName: amb?.driverName || 'Driver',
+        phone: amb?.phone || '',
+        location: gps.location || { lat: 13.0627, lng: 80.2545 },
+        reason: backupReason,
+        emergencyId: activeEmerg?.id || null,
+      });
+      setBackupSuccess(true);
+      setTimeout(() => {
+        setBackupSuccess(false);
+        setShowBackupModal(false);
+      }, 2500);
+    } catch (err) {
+      console.error("Backup request error:", err);
+    } finally {
+      setSendingBackup(false);
+    }
+  };
 
   const mapMarkers: MapMarker[] = [];
   const ambLat = gps.location?.lat ?? 13.0627;
@@ -495,41 +572,121 @@ export default function AmbulanceDashboard() {
         </div>
       </div>
 
-      {/* Arrival Auto-Trigger Banner */}
+      {/* Hospital Handover Success Banner */}
       <AnimatePresence>
-        {arrivedBanner && (
+        {hospitalHandoverDone && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="bg-emerald-600 text-white shadow-md">
+            <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-5 h-5 text-emerald-200 shrink-0" />
+                <div>
+                  <p className="font-extrabold text-xs">🎯 Hospital Handover Complete!</p>
+                  <p className="text-emerald-100 text-[11px]">Patient admitted. Unit is available for new emergency dispatches.</p>
+                </div>
+              </div>
+              <span className="badge bg-white text-emerald-800 text-[10px] font-black shrink-0">Standby Free</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Incoming Fleet Backup Broadcast Banner from other drivers */}
+      <AnimatePresence>
+        {activeBackupRequests.length > 0 && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="bg-orange-600 text-white shadow-md">
+            <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Radio className="w-4 h-4 text-orange-200 animate-pulse shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-extrabold text-xs truncate">📢 Fleet Backup Alert ({activeBackupRequests[0].vehicleNo})</p>
+                  <p className="text-orange-100 text-[10px] truncate">{activeBackupRequests[0].reason}</p>
+                </div>
+              </div>
+              {activeBackupRequests[0].phone && (
+                <a
+                  href={`tel:${activeBackupRequests[0].phone}`}
+                  className="btn-primary py-1 px-2.5 text-[10px] bg-white text-orange-800 hover:bg-orange-50 font-bold rounded-lg shrink-0 shadow-sm"
+                >
+                  Call Unit
+                </a>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Arrival Auto-Trigger Banner at Patient */}
+      <AnimatePresence>
+        {arrivedBanner && !isTransitToHospital && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
             className="bg-green-600 text-white">
             <div className="max-w-md mx-auto px-4 py-3 flex items-center gap-3">
               <Target className="w-5 h-5 animate-ping-slow" />
               <div>
-                <p className="font-bold text-sm">🎯 Destination Reached!</p>
-                <p className="text-green-100 text-xs">AI is loading best hospitals automatically…</p>
+                <p className="font-bold text-sm">🎯 Arrived at Patient Location!</p>
+                <p className="text-green-100 text-xs">Patient onboard · Select destination hospital…</p>
               </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Active Mission Banner */}
+      {/* In Transit to Hospital Banner */}
       <AnimatePresence>
-        {activeEmerg && !arrivedBanner && (
+        {isTransitToHospital && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="bg-purple-700 text-white shadow-md">
+            <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Building2 className="w-4 h-4 text-purple-200 animate-pulse shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-extrabold text-xs truncate">In Transit → {bestHosp?.hospital.name || 'Hospital ER'}</p>
+                  <p className="text-purple-200 text-[11px]">
+                    {distToTargetHospital !== null
+                      ? `${formatDistance(distToTargetHospital)} to ER · ~${Math.max(1, Math.round(distToTargetHospital * 2.4))}m ETA`
+                      : 'Navigating to hospital…'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={completeHospitalHandover}
+                className="btn-primary py-1.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black rounded-xl shrink-0 shadow-sm"
+              >
+                Complete Handover
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Active En Route to Patient Banner */}
+      <AnimatePresence>
+        {activeEmerg && !isTransitToHospital && !arrivedBanner && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
             className="bg-brand-600 text-white">
-            <div className="max-w-md mx-auto px-4 py-2.5 flex items-center gap-3">
-              <Navigation className="w-4 h-4 animate-pulse" />
-              <div className="flex-1">
-                <p className="text-xs font-semibold">En Route → {activeEmerg.userName}</p>
-                {distanceKm !== null && (
-                  <p className="text-red-100 text-xs">
-                    {distanceKm < 1
-                      ? `${Math.round(distanceKm * 1000)} m away`
-                      : `${distanceKm.toFixed(1)} km away`}
-                    {distanceKm < 0.5 && ' · Almost there!'}
-                  </p>
-                )}
+            <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Navigation className="w-4 h-4 animate-pulse shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold truncate">En Route to Patient → {activeEmerg.userName}</p>
+                  {distanceKm !== null && (
+                    <p className="text-red-100 text-xs">
+                      {distanceKm < 1
+                        ? `${Math.round(distanceKm * 1000)} m away`
+                        : `${distanceKm.toFixed(1)} km away`}
+                      {distanceKm < 0.5 && ' · Almost there!'}
+                    </p>
+                  )}
+                </div>
               </div>
-              <Zap className="w-4 h-4 text-yellow-300" />
+              <button
+                onClick={() => setShowBackupModal(true)}
+                className="btn-secondary py-1 px-2.5 text-[10px] bg-white/20 hover:bg-white/30 text-white border-white/30 font-bold rounded-lg flex items-center gap-1 shrink-0"
+              >
+                <Radio className="w-3 h-3" /> Backup
+              </button>
             </div>
           </motion.div>
         )}
@@ -696,42 +853,117 @@ export default function AmbulanceDashboard() {
         {/* ── MAP TAB ────────────────────────── */}
         {tab === 'map' && (
           <div className="card p-4">
-            <p className="section-title">Live Tracking</p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="section-title mb-0">Live Navigation & Tracking</p>
+              {isTransitToHospital && (
+                <span className="badge-purple text-[10px] font-black animate-pulse flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 bg-purple-600 rounded-full" />
+                  IN TRANSIT TO HOSPITAL
+                </span>
+              )}
+            </div>
+
             {activeEmerg ? (
               <>
-                <div className="flex items-center gap-3 mb-4 p-3 bg-brand-50 rounded-xl">
-                  <AlertTriangle className="w-5 h-5 text-brand-600" />
-                  <div className="flex-1">
-                    <p className="font-semibold text-sm text-gray-900">{activeEmerg.userName}</p>
-                    <p className="text-xs text-gray-500">{activeEmerg.userBloodGroup} · {activeEmerg.userPhone}</p>
-                  </div>
-                  {distanceKm !== null && (
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-brand-700">
-                        {distanceKm < 1 ? `${Math.round(distanceKm * 1000)}m` : `${distanceKm.toFixed(1)}km`}
-                      </p>
-                      <p className="text-xs text-gray-400">away</p>
+                {isTransitToHospital ? (
+                  <div className="mb-4 p-4 bg-gradient-to-r from-purple-50 to-brand-50 border border-purple-200/90 rounded-2xl space-y-3 shadow-xs">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center shadow-sm shrink-0">
+                          <Building2 className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="badge-purple text-[9px] font-black uppercase tracking-wider">
+                            Patient Onboard · Destination
+                          </span>
+                          <h3 className="font-extrabold text-sm text-gray-900 mt-0.5 truncate">
+                            {bestHosp?.hospital.name || 'Hospital ER'}
+                          </h3>
+                          <p className="text-xs text-gray-500 truncate">
+                            Patient: {activeEmerg.userName} ({activeEmerg.userBloodGroup || 'Blood Group N/A'})
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right bg-white/90 backdrop-blur-xs p-2 rounded-xl border border-purple-100 shrink-0 shadow-2xs">
+                        <p className="text-base font-black text-purple-700">
+                          {formatDistance(distToTargetHospital || undefined)}
+                        </p>
+                        <p className="text-[10px] text-gray-400 font-bold">
+                          ~{Math.max(1, Math.round((distToTargetHospital ?? 1) * 2.4))}m to ER
+                        </p>
+                      </div>
                     </div>
-                  )}
-                </div>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        onClick={completeHospitalHandover}
+                        className="btn-primary flex-1 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-black flex items-center justify-center gap-1.5 shadow-sm rounded-xl"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Complete ER Handover (10m reached)
+                      </button>
+                      <button
+                        onClick={() => setShowBackupModal(true)}
+                        className="btn-secondary py-2 px-3 text-xs border-orange-200 text-orange-700 hover:bg-orange-50 font-bold flex items-center gap-1 rounded-xl shrink-0"
+                      >
+                        <Radio className="w-3.5 h-3.5 text-orange-600" /> Request Backup
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between mb-4 p-3 bg-brand-50 rounded-xl border border-brand-100">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <AlertTriangle className="w-5 h-5 text-brand-600 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-bold text-sm text-gray-900 truncate">Patient: {activeEmerg.userName}</p>
+                        <p className="text-xs text-gray-500">{activeEmerg.userBloodGroup} Blood · {activeEmerg.userPhone}</p>
+                      </div>
+                    </div>
+                    {distanceKm !== null && (
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-black text-brand-700">
+                          {distanceKm < 1 ? `${Math.round(distanceKm * 1000)}m` : `${distanceKm.toFixed(1)}km`}
+                        </p>
+                        <p className="text-[10px] text-gray-400 font-semibold">to patient</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <MapView
-                  center={gps.location || activeEmerg.location}
+                  center={
+                    isTransitToHospital && bestHosp?.hospital.location
+                      ? gps.location || bestHosp.hospital.location
+                      : gps.location || activeEmerg.location
+                  }
                   routePoints={
-                    bestHosp?.hospital.location && (gps.location || activeEmerg?.location)
-                      ? [(gps.location || activeEmerg?.location)!, bestHosp.hospital.location]
-                      : gps.location && activeEmerg?.location
+                    isTransitToHospital && bestHosp?.hospital.location && gps.location
+                      ? [gps.location, bestHosp.hospital.location]
+                      : !isTransitToHospital && gps.location && activeEmerg?.location
                       ? [gps.location, activeEmerg.location]
                       : undefined
                   }
                   markers={mapMarkers}
                   height="320px"
-                  zoom={14}
+                  zoom={13}
                 />
-                <div className="mt-3 bg-green-50 rounded-xl p-3 flex items-center gap-2">
-                  <Target className="w-4 h-4 text-green-600" />
-                  <p className="text-xs text-green-700 font-medium">
-                    {bestHosp ? `Route locked to ${bestHosp.hospital.name}` : 'Hospital finder will auto-activate when you arrive (within 200m)'}
-                  </p>
+
+                <div className="mt-3 bg-gray-50 rounded-xl p-3 flex items-center justify-between gap-2 border border-gray-100 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Target className="w-4 h-4 text-brand-600 shrink-0" />
+                    <p className="text-gray-700 font-medium">
+                      {isTransitToHospital && bestHosp
+                        ? `Route active to ${bestHosp.hospital.name} (Auto-completes within 10m)`
+                        : bestHosp
+                        ? `Destination set to ${bestHosp.hospital.name}`
+                        : 'En route to patient incident location'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowBackupModal(true)}
+                    className="text-orange-600 hover:text-orange-700 font-bold flex items-center gap-1 text-[11px] shrink-0"
+                  >
+                    <Radio className="w-3 h-3" /> Fleet Backup
+                  </button>
                 </div>
               </>
             ) : (
@@ -872,20 +1104,59 @@ export default function AmbulanceDashboard() {
                 </button>
               </div>
             ) : sentAlert ? (
-              <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="card p-8 text-center">
-                <CheckCircle className="w-14 h-14 text-green-500 mx-auto mb-3" />
-                <h3 className="font-bold text-gray-900 text-lg">Hospital Notified!</h3>
-                <p className="text-gray-500 text-sm mt-2">{bestHosp?.hospital.name} has been alerted.</p>
-                <p className="text-brand-600 font-semibold mt-1">ETA: {bestHosp?.etaMinutes} minutes</p>
+              <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="card p-6 space-y-4 bg-purple-50/70 border border-purple-200">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-12 h-12 bg-purple-600 text-white rounded-2xl flex items-center justify-center shadow-md shrink-0">
+                      <Building2 className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <span className="badge-purple text-[10px] font-black uppercase tracking-wider">Hospital Notified & In Transit</span>
+                      <h3 className="font-extrabold text-base text-gray-900 mt-0.5 truncate">{bestHosp?.hospital.name}</h3>
+                      <p className="text-xs text-gray-500">
+                        Patient: {activeEmerg.userName} ({activeEmerg.userBloodGroup || 'Blood Group N/A'}) · {patientCount} patient{patientCount > 1 ? 's' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right bg-white p-2 rounded-xl border border-purple-100 shrink-0 shadow-2xs">
+                    <p className="text-lg font-black text-purple-700">{formatDistance(distToTargetHospital || undefined)}</p>
+                    <p className="text-[10px] text-gray-400 font-bold">~{Math.max(1, Math.round((distToTargetHospital ?? 1) * 2.4))}m to ER</p>
+                  </div>
+                </div>
+
                 {voiceNote && (
-                  <div className="mt-3 bg-gray-50 rounded-xl p-3 text-left">
-                    <p className="text-xs text-gray-400 mb-1">Message sent to hospital:</p>
-                    <p className="text-sm text-gray-700 italic">"{voiceNote}"</p>
+                  <div className="bg-white rounded-xl p-3 border border-purple-100 text-left">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Voice Update Broadcasted to ER:</p>
+                    <p className="text-xs text-gray-700 italic">"{voiceNote}"</p>
                   </div>
                 )}
-                <button onClick={() => { setSentAlert(false); setTab('map'); }} className="btn-secondary mt-4">
-                  Back to Map
-                </button>
+
+                <MapView
+                  center={gps.location || bestHosp?.hospital.location || { lat: 13.0627, lng: 80.2545 }}
+                  routePoints={
+                    bestHosp?.hospital.location && gps.location
+                      ? [gps.location, bestHosp.hospital.location]
+                      : undefined
+                  }
+                  markers={mapMarkers}
+                  height="220px"
+                  zoom={13}
+                />
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    onClick={completeHospitalHandover}
+                    className="btn-primary flex-1 py-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-md flex items-center justify-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Complete ER Handover (10m away)
+                  </button>
+                  <button
+                    onClick={() => setShowBackupModal(true)}
+                    className="btn-secondary py-3 px-4 text-xs border-orange-200 text-orange-700 hover:bg-orange-50 font-bold rounded-xl flex items-center gap-1 shrink-0"
+                  >
+                    <Radio className="w-4 h-4 text-orange-600" /> Request Backup
+                  </button>
+                </div>
               </motion.div>
             ) : (
               <>
@@ -1380,6 +1651,141 @@ export default function AmbulanceDashboard() {
                   Review on Alerts Tab →
                 </button>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── FLEET BACKUP & MUTUAL AID MODAL ── */}
+      <AnimatePresence>
+        {showBackupModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-5 space-y-4 border border-gray-100"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center">
+                    <Radio className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm text-gray-900">Request Fleet Backup</h3>
+                    <p className="text-xs text-gray-400">Notify other ambulances in Chennai</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowBackupModal(false)}
+                  className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {backupSuccess ? (
+                <div className="p-5 bg-green-50 border border-green-200 rounded-2xl text-center space-y-2">
+                  <CheckCircle2 className="w-10 h-10 text-green-600 mx-auto" />
+                  <p className="font-extrabold text-sm text-green-900">Backup Alert Broadcasted!</p>
+                  <p className="text-xs text-green-700">All available units in the fleet network have received your request.</p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-2">
+                      Select Backup Reason:
+                    </label>
+                    <div className="space-y-1.5">
+                      {[
+                        'Extra Ambulance Needed (Multi-Casualty)',
+                        'Critical Patient CPR / Medical Escort Support',
+                        'Vehicle Breakdown / Road Obstruction Assistance',
+                        'Route Assistance / Traffic Detour Escort',
+                      ].map(r => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setBackupReason(r)}
+                          className={`w-full text-left p-2.5 rounded-xl border text-xs font-semibold transition-all ${
+                            backupReason === r
+                              ? 'border-orange-500 bg-orange-50/80 text-orange-900 font-bold'
+                              : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'
+                          }`}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Nearby Free Units List */}
+                  <div>
+                    <p className="text-xs font-bold text-gray-700 mb-1.5 flex items-center justify-between">
+                      <span>Nearby Standby Ambulances</span>
+                      <span className="badge-green text-[9px] font-bold">{freeAmbulanceCount} Available</span>
+                    </p>
+                    <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                      {otherFleetAmbulances.filter(a => !busyAmbulanceUids.has(a.uid) && a.status !== 'on_mission').length === 0 ? (
+                        <p className="text-xs text-gray-400 italic p-2 bg-gray-50 rounded-xl text-center">No other standby units in immediate range</p>
+                      ) : (
+                        otherFleetAmbulances.filter(a => !busyAmbulanceUids.has(a.uid) && a.status !== 'on_mission').map(u => {
+                          const dist = gps.location && u.location
+                            ? haversineKm(gps.location.lat, gps.location.lng, u.location.lat, u.location.lng)
+                            : null;
+                          return (
+                            <div key={u.uid} className="flex items-center justify-between p-2 bg-gray-50 rounded-xl border border-gray-100 text-xs">
+                              <div>
+                                <p className="font-bold text-gray-900">{u.vehicleNo}</p>
+                                <p className="text-[10px] text-gray-500">{u.driverName} ({dist ? formatDistance(dist) : 'Nearby'})</p>
+                              </div>
+                              {u.phone ? (
+                                <a
+                                  href={`tel:${u.phone}`}
+                                  className="btn-primary py-1 px-2.5 text-[11px] bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg flex items-center gap-1 shadow-xs"
+                                >
+                                  <Phone className="w-3 h-3" /> Call
+                                </a>
+                              ) : (
+                                <span className="text-[10px] text-gray-400">Online</span>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-2 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setShowBackupModal(false)}
+                      className="btn-secondary flex-1 py-2.5 text-xs font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSendBackupRequest}
+                      disabled={sendingBackup}
+                      className="btn-primary flex-1 py-2.5 text-xs bg-orange-600 hover:bg-orange-700 text-white font-black flex items-center justify-center gap-1.5 shadow-md"
+                    >
+                      {sendingBackup ? (
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <>
+                          <Radio className="w-3.5 h-3.5" /> Broadcast to Fleet
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
             </motion.div>
           </motion.div>
         )}

@@ -9,6 +9,7 @@ export type EmergencyStatus =
   | 'analysing'
   | 'confirmed'
   | 'dispatched'
+  | 'en_route'
   | 'arrived'
   | 'resolved'
   | 'aborted';
@@ -60,6 +61,8 @@ export interface Emergency {
   confidenceScore: number;     // 0–100
   ambulanceId?: string;
   hospitalId?: string;
+  hospitalName?: string;
+  patientCount?: number;
   sensorData: SensorData;
   timestamp: number;
   resolvedAt?: number;

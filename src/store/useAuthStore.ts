@@ -42,10 +42,10 @@ function getDemoProfileByEmail(email: string): Partial<Profile> | null {
   if (norm.includes('saveetha')) {
     return {
       name: 'Saveetha Medical College and Hospital',
-      address: 'Saveetha Nagar, Poonamallee High Road, Chennai - 600077',
+      address: 'Saveetha Nagar, Chennai-Bengaluru National Highway (NH 48), Thandalam, Kanchipuram / Chennai - 602105',
       phone: '+91 044-66726672',
-      location: { lat: 13.0545, lng: 80.2285 },
-      specialties: ['Medical College Hospital', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', 'Neurology', '24/7 Emergency ICU', 'Blood Bank'],
+      location: { lat: 13.0280, lng: 80.0165 },
+      specialties: ['Medical College Hospital (Thandalam)', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', 'Neurology', '24/7 Emergency ICU', 'Blood Bank'],
       beds: {
         general:   { total: 600, available: 145 },
         icu:       { total: 50,  available: 16  },
@@ -55,7 +55,7 @@ function getDemoProfileByEmail(email: string): Partial<Profile> | null {
       oxygen: { cylinders: 140, piped: true },
       ventilators: 30,
       doctorsOnDuty: [
-        { name: 'Dr. S. K. Venkatesh', specialty: 'Medical College Professor & Trauma Lead' },
+        { name: 'Dr. S. K. Venkatesh', specialty: 'Medical College Professor & Trauma Lead (Thandalam)' },
         { name: 'Dr. Ananya Raman',   specialty: 'Critical Care & Emergency Medicine' },
       ],
       role: 'hospital',

@@ -120,7 +120,7 @@ export default function Login() {
                   }}
                   className="p-2 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200/70 text-purple-900 transition-colors"
                 >
-                  <p className="font-bold text-[11px] truncate">🎓 Saveetha Hospital</p>
+                  <p className="font-bold text-[11px] truncate">🎓 Saveetha Hospital (Thandalam)</p>
                   <p className="text-[9px] text-purple-600 truncate">saveetha_hosp@vitalsync.demo</p>
                 </button>
 
