@@ -72,9 +72,18 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
   const [isMuted,      setIsMuted]      = useState(false);
   const [stillnessSec, setStillnessSec] = useState(0);
 
-  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isMutedRef     = useRef(false);
-  isMutedRef.current   = isMuted;
+  const countdownTimer   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMutedRef       = useRef(false);
+  isMutedRef.current     = isMuted;
+
+  const onConfirmedRef   = useRef(onConfirmed);
+  onConfirmedRef.current = onConfirmed;
+
+  const shakeMagRef      = useRef(shakeMagnitude);
+  shakeMagRef.current    = shakeMagnitude;
+
+  const stillnessSecRef  = useRef(stillnessSec);
+  stillnessSecRef.current = stillnessSec;
 
   const replayVoice = useCallback(() => {
     playEmergencyAlarmBeep();
@@ -84,26 +93,20 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
     );
   }, []);
 
-  // Reset & speak on open
+  // Steady 30-second countdown timer (strictly isolated from sub-second sensor state updates)
   useEffect(() => {
-    if (isOpen) {
-      setCountdown(30);
-      playEmergencyAlarmBeep();
-      speakVoicePrompt(
-        "Emergency shake detected. Are you in danger? Press I'm Safe if you are okay, or Send Help to alert emergency services.",
-        isMutedRef.current
-      );
-    } else {
+    if (!isOpen) {
       cancelVoicePrompt();
+      if (countdownTimer.current) clearInterval(countdownTimer.current);
+      return;
     }
-    return () => {
-      cancelVoicePrompt();
-    };
-  }, [isOpen]);
 
-  // Countdown timer with voice warning
-  useEffect(() => {
-    if (!isOpen) return;
+    setCountdown(30);
+    playEmergencyAlarmBeep();
+    speakVoicePrompt(
+      "Emergency shake detected. Are you in danger? Press I'm Safe if you are okay, or Send Help to alert emergency services.",
+      isMutedRef.current
+    );
 
     countdownTimer.current = setInterval(() => {
       setCountdown(c => {
@@ -111,11 +114,11 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
           speakVoicePrompt("10 seconds remaining. Are you in danger? Press I'm Safe to cancel.", isMutedRef.current);
         }
         if (c <= 1) {
-          clearInterval(countdownTimer.current!);
+          if (countdownTimer.current) clearInterval(countdownTimer.current);
           cancelVoicePrompt();
           const sensorData: SensorData = {
-            maxShakeMagnitude: shakeMagnitude || 35,
-            stillnessDuration: stillnessSec || 30,
+            maxShakeMagnitude: shakeMagRef.current || 35,
+            stillnessDuration: stillnessSecRef.current || 30,
             audioLevel: 0,
           };
           const result: AIAnalysisResult = {
@@ -124,18 +127,20 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
             reasoning: '🚨 Emergency shake auto-confirmed after 30s countdown.',
             timestamp: Date.now(),
           };
-          onConfirmed(result, sensorData);
+          onConfirmedRef.current(result, sensorData);
           return 0;
         }
         return c - 1;
       });
     }, 1000);
 
-    return () => { if (countdownTimer.current) clearInterval(countdownTimer.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, shakeMagnitude, stillnessSec, onConfirmed]);
+    return () => {
+      if (countdownTimer.current) clearInterval(countdownTimer.current);
+      cancelVoicePrompt();
+    };
+  }, [isOpen]);
 
-  // Load stillness from sensor (simulate tracking)
+  // Load stillness from sensor
   useEffect(() => {
     if (!isOpen) return;
     const id = setInterval(() => setStillnessSec(s => s + 0.1), 100);
@@ -143,17 +148,17 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
   }, [isOpen]);
 
   const handleAbort = () => {
-    clearInterval(countdownTimer.current!);
+    if (countdownTimer.current) clearInterval(countdownTimer.current);
     cancelVoicePrompt();
     onAbort();
   };
 
   const handleConfirm = () => {
-    clearInterval(countdownTimer.current!);
+    if (countdownTimer.current) clearInterval(countdownTimer.current);
     cancelVoicePrompt();
     const sensorData: SensorData = {
-      maxShakeMagnitude: shakeMagnitude || 42,
-      stillnessDuration: stillnessSec || 1,
+      maxShakeMagnitude: shakeMagRef.current || 42,
+      stillnessDuration: stillnessSecRef.current || 1,
       audioLevel: 0,
     };
     const result: AIAnalysisResult = {
@@ -162,7 +167,7 @@ export default function EmergencyDialog({ isOpen, shakeMagnitude, onAbort, onCon
       reasoning: '🚨 Emergency alert triggered directly by user.',
       timestamp: Date.now(),
     };
-    onConfirmed(result, sensorData);
+    onConfirmedRef.current(result, sensorData);
   };
 
   if (!isOpen) return null;
