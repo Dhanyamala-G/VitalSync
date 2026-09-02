@@ -21,16 +21,19 @@ export interface MapMarker {
   color?:     'red' | 'blue' | 'green' | 'orange' | 'purple' | 'gray' | 'yellow';
   pulse?:     boolean;
   iconText?:  string;
+  category?:  string;
+  details?:   string;
+  distance?:  string;
 }
 
 interface Props {
-  center:      { lat: number; lng: number };
-  zoom?:       number;
-  markers?:    MapMarker[];
-  height?:     string;
-  className?:  string;
-  showRoute?:  boolean;
-  showLegend?: boolean;
+  center:       { lat: number; lng: number };
+  zoom?:        number;
+  markers?:     MapMarker[];
+  height?:      string;
+  className?:   string;
+  routePoints?: { lat: number; lng: number }[]; // Clean route line connecting ONLY these specific points
+  showLegend?:  boolean;
 }
 
 function makeIcon(color: string, pulse: boolean, iconText?: string): L.DivIcon {
@@ -45,13 +48,14 @@ function makeIcon(color: string, pulse: boolean, iconText?: string): L.DivIcon {
   return L.divIcon({
     className: '',
     html: `
-      <div style="position:relative;width:28px;height:28px;display:flex;items-center;justify-content:center;">
+      <div style="position:relative;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
         ${ring}
         <div style="
           width:28px;height:28px;border-radius:50%;
           background:${color};border:2.5px solid white;
           box-shadow:0 3px 10px rgba(0,0,0,0.4);
           display:flex;align-items:center;justify-content:center;
+          transition:transform 0.15s ease;
         ">
           ${inner}
         </div>
@@ -78,7 +82,7 @@ export default function MapView({
   markers = [],
   height = '240px',
   className = '',
-  showRoute = false,
+  routePoints,
   showLegend = true,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -123,7 +127,7 @@ export default function MapView({
     }
   }, [center.lat, center.lng]);
 
-  // Update markers
+  // Update markers and explicit routing lines
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -137,27 +141,53 @@ export default function MapView({
     markers.forEach(m => {
       const hexColor = COLOR_MAP[m.color || 'red'] || '#DC2626';
       const icon     = makeIcon(hexColor, m.pulse || false, m.iconText);
-      L.marker([m.lat, m.lng], { icon })
-        .bindPopup(`
-          <div style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;padding:2px 0;">
-            <b style="color:${hexColor};display:block;margin-bottom:2px;">${m.label}</b>
-            <span style="color:#64748b;font-size:11px;">${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</span>
+      const marker = L.marker([m.lat, m.lng], { icon });
+
+      // Rich touch & click popup with full hospital details
+      const popupHtml = `
+        <div style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;padding:4px 2px;min-width:160px;line-height:1.4;">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${hexColor};"></span>
+            <b style="color:#0f172a;font-size:13px;font-weight:800;letter-spacing:-0.01em;">${m.label}</b>
           </div>
-        `)
-        .addTo(map);
+          ${m.category ? `<div style="display:inline-block;background:#f1f5f9;color:#334155;font-size:10px;font-weight:700;padding:2px 6px;border-radius:6px;margin-bottom:4px;">${m.category}</div>` : ''}
+          ${m.details ? `<div style="color:#475569;font-size:11px;margin-bottom:3px;">${m.details}</div>` : ''}
+          ${m.distance ? `<div style="color:#2563eb;font-size:11px;font-weight:700;">📍 ${m.distance}</div>` : ''}
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">GPS: ${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</div>
+        </div>
+      `;
+
+      marker.bindPopup(popupHtml, {
+        closeButton: true,
+        autoPan: true,
+        className: 'custom-map-popup',
+      });
+
+      // Quick tooltip on hover / touch preview
+      marker.bindTooltip(m.label, {
+        direction: 'top',
+        offset: [0, -16],
+        opacity: 0.95,
+      });
+
+      marker.addTo(map);
     });
 
-    if (showRoute && markers.length >= 2) {
-      const latlngs = markers.map(m => [m.lat, m.lng] as L.LatLngExpression);
-      L.polyline(latlngs, {
-        color: '#2563EB',
-        weight: 4,
-        opacity: 0.85,
-        dashArray: '8, 8',
-        lineJoin: 'round',
-      }).addTo(map);
+    // ONLY draw route line if explicit routePoints are provided (e.g. Ambulance to chosen Hospital)
+    if (routePoints && routePoints.length >= 2) {
+      const validPoints = routePoints.filter(p => p && typeof p.lat === 'number' && typeof p.lng === 'number');
+      if (validPoints.length >= 2) {
+        const latlngs = validPoints.map(p => [p.lat, p.lng] as L.LatLngExpression);
+        L.polyline(latlngs, {
+          color: '#2563EB',
+          weight: 4.5,
+          opacity: 0.85,
+          dashArray: '8, 8',
+          lineJoin: 'round',
+        }).addTo(map);
+      }
     }
-  }, [markers, showRoute]);
+  }, [markers, routePoints]);
 
   return (
     <div className="space-y-1.5 relative isolate z-0">

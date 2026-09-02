@@ -48,7 +48,7 @@ export function subscribeToEmergencies(
           timestamp: getTimestampMillis(data.timestamp),
         } as Emergency;
       })
-      .filter(e => ['triggered', 'confirmed', 'dispatched'].includes(e.status));
+      .filter(e => ['confirmed', 'dispatched', 'en_route'].includes(e.status));
       
     // Sort by timestamp descending
     list.sort((a, b) => b.timestamp - a.timestamp);

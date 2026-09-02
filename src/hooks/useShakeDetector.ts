@@ -1,17 +1,10 @@
 // ─────────────────────────────────────────────
 //  useShakeDetector — Accelerometer Hook
 //
-//  🔧 DEMO MODE — Works on Android + iOS
-//
-//  FIX: Uses e.acceleration (WITHOUT gravity) not
-//       accelerationIncludingGravity — gravity adds
-//       9.8 m/s² at rest which always false-triggers.
-//
-//  Shake threshold : 5 m/s²   (quick flick, not idle noise)
-//  Min readings    : 2         (two rapid readings)
-//  Cooldown        : 3 seconds (won't re-trigger too fast)
-//
-//  For production: SHAKE_THRESHOLD = 15
+//  Delta-based High-Pass Filter:
+//  Computes change between consecutive frames (curr - prev)
+//  which eliminates static 9.8 m/s² gravity regardless of
+//  device tilt, resting position, or refresh state.
 // ─────────────────────────────────────────────
 import { useEffect, useRef, useCallback, useState } from 'react';
 
@@ -25,12 +18,13 @@ export interface ShakeState {
   requestPermission: () => Promise<boolean>;
 }
 
-// ── DEMO values ───────────────────────────────
-const SHAKE_THRESHOLD = 40;   // m/s² — ultra hard deliberate shake needed
-const SHAKE_MIN_COUNT = 2;    // 2 rapid readings above threshold
-const STILL_THRESHOLD = 2.0;  // m/s² — below this = still
+// ── Sensor threshold constants ────────────────
+const SHAKE_THRESHOLD = 28;   // m/s² — requires deliberate physical shaking
+const SHAKE_MIN_COUNT = 3;    // 3 consecutive motion spikes across frames
+const STILL_THRESHOLD = 1.5;  // m/s² — below this = truly still
 const STILL_MIN_SEC   = 0.5;  // seconds of stillness to confirm
-const COOLDOWN_MS     = 3000; // ms before shake can re-trigger
+const COOLDOWN_MS     = 4000; // ms before shake can re-trigger
+const WARMUP_MS       = 2500; // ms startup warmup: ignore initial browser sensor artifacts on refresh
 
 export function useShakeDetector(
   onShake: (maxMagnitude: number) => void,
@@ -43,7 +37,7 @@ export function useShakeDetector(
     maxMagnitude:      0,
     isStill:           false,
     stillnessDuration: 0,
-    permissionGranted: true,  // Android doesn't need permission — start true
+    permissionGranted: true,
     requestPermission: async () => true,
   });
 
@@ -51,7 +45,11 @@ export function useShakeDetector(
   const maxMag        = useRef(0);
   const hadShake      = useRef(false);
   const stillStart    = useRef<number | null>(null);
-  const lastTrigger   = useRef<number>(0);   // cooldown tracker
+  const lastTrigger   = useRef<number>(0);
+  const mountTime     = useRef<number>(Date.now());
+  const prevAccel     = useRef<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
+  const hasPrev       = useRef(false);
+
   const onShakeRef    = useRef(onShake);
   const onStillRef    = useRef(onStillnessAfterShake);
 
@@ -59,7 +57,6 @@ export function useShakeDetector(
   onStillRef.current = onStillnessAfterShake;
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
-    // iOS 13+ only — Android grants automatically
     if (
       typeof DeviceMotionEvent !== 'undefined' &&
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -75,7 +72,6 @@ export function useShakeDetector(
         return false;
       }
     }
-    // Android / desktop — no permission needed, always granted
     setState(s => ({ ...s, permissionGranted: true }));
     return true;
   }, []);
@@ -87,34 +83,55 @@ export function useShakeDetector(
   useEffect(() => {
     if (!enabled) return;
 
-    const handleMotion = (e: DeviceMotionEvent) => {
-      // ── KEY FIX: use e.acceleration (no gravity) ──
-      // accelerationIncludingGravity adds ~9.8 m/s² at rest
-      // which would always exceed any threshold.
-      // e.acceleration removes gravity so 0 = truly at rest.
-      //
-      // Fallback: if acceleration is unavailable (some older Android),
-      // subtract gravity from accelerationIncludingGravity manually.
-      let x = 0, y = 0, z = 0;
+    mountTime.current = Date.now();
+    hasPrev.current = false;
+    shakeCount.current = 0;
+    maxMag.current = 0;
+    hadShake.current = false;
 
-      if (e.acceleration && e.acceleration.x !== null) {
-        x = e.acceleration.x ?? 0;
-        y = e.acceleration.y ?? 0;
-        z = e.acceleration.z ?? 0;
-      } else if (e.accelerationIncludingGravity) {
-        // Rough gravity removal (device upright): subtract 9.8 from z
-        x = e.accelerationIncludingGravity.x ?? 0;
-        y = e.accelerationIncludingGravity.y ?? 0;
-        z = (e.accelerationIncludingGravity.z ?? 0) - 9.8;
-      } else {
-        return; // no sensor data at all
+    const handleMotion = (e: DeviceMotionEvent) => {
+      // 1. Warmup period: ignore initial events right after mount/refresh to prevent false triggers
+      if (Date.now() - mountTime.current < WARMUP_MS) {
+        return;
       }
 
-      const mag = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+      let mag = 0;
 
-      setState(s => ({ ...s, magnitude: mag }));
+      // Primary: hardware-filtered linear acceleration (no gravity)
+      if (e.acceleration && e.acceleration.x !== null && typeof e.acceleration.x === 'number') {
+        const x = e.acceleration.x ?? 0;
+        const y = e.acceleration.y ?? 0;
+        const z = e.acceleration.z ?? 0;
+        mag = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+      } 
+      // Secondary: delta-based high-pass filter over accelerationIncludingGravity
+      else if (e.accelerationIncludingGravity && e.accelerationIncludingGravity.x !== null) {
+        const currX = e.accelerationIncludingGravity.x ?? 0;
+        const currY = e.accelerationIncludingGravity.y ?? 0;
+        const currZ = e.accelerationIncludingGravity.z ?? 0;
 
-      // ── Shake detection ─────────────────────────
+        if (!hasPrev.current) {
+          prevAccel.current = { x: currX, y: currY, z: currZ };
+          hasPrev.current = true;
+          return;
+        }
+
+        const deltaX = currX - prevAccel.current.x;
+        const deltaY = currY - prevAccel.current.y;
+        const deltaZ = currZ - prevAccel.current.z;
+        prevAccel.current = { x: currX, y: currY, z: currZ };
+
+        mag = Math.sqrt(deltaX ** 2 + deltaY ** 2 + deltaZ ** 2);
+      } else {
+        return;
+      }
+
+      // Filter out micro sensor noise
+      if (mag < 1.0) mag = 0;
+
+      setState(s => ({ ...s, magnitude: Math.round(mag * 10) / 10 }));
+
+      // ── Shake Detection ───────────────────────────
       if (mag > SHAKE_THRESHOLD) {
         shakeCount.current += 1;
         if (mag > maxMag.current) maxMag.current = mag;
@@ -127,7 +144,7 @@ export function useShakeDetector(
           !hadShake.current &&
           cooldownPassed
         ) {
-          hadShake.current  = true;
+          hadShake.current = true;
           lastTrigger.current = now;
           stillStart.current = null;
 
@@ -135,11 +152,10 @@ export function useShakeDetector(
           onShakeRef.current(maxMag.current);
         }
       } else {
-        // Decay shake count when below threshold
         if (shakeCount.current > 0) shakeCount.current -= 1;
       }
 
-      // ── Stillness detection (after shake) ───────
+      // ── Stillness Detection (after shake) ─────────
       if (hadShake.current && mag < STILL_THRESHOLD) {
         if (!stillStart.current) stillStart.current = Date.now();
         const secs = (Date.now() - stillStart.current) / 1000;
@@ -148,7 +164,6 @@ export function useShakeDetector(
 
         if (secs >= STILL_MIN_SEC) {
           onStillRef.current(secs);
-          // Reset so shake can trigger again after cooldown
           hadShake.current   = false;
           shakeCount.current = 0;
           maxMag.current     = 0;
@@ -162,7 +177,7 @@ export function useShakeDetector(
 
     window.addEventListener('devicemotion', handleMotion, { passive: true });
     return () => window.removeEventListener('devicemotion', handleMotion);
-  }, [enabled]);   // ← removed state deps that caused re-subscribe loop
+  }, [enabled]);
 
   return state;
 }

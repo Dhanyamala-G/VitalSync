@@ -5,7 +5,7 @@
 //  • Emergency dialog trigger
 //  • Emergency history
 // ─────────────────────────────────────────────
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
@@ -19,7 +19,7 @@ import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
 import MapView from '../../components/MapView';
 import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies, fetchHospitals } from '../../services/emergencyService';
-import { fetchLiveNearbyHospitals } from '../../services/aiService';
+import { fetchLiveNearbyHospitals, haversineKm } from '../../services/aiService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile, HospitalProfile } from '../../types';
 import { collection, onSnapshot, query, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -123,51 +123,13 @@ export default function UserDashboard() {
   };
 
   const gps = useGPS(true);
-  const pendingEmergencyIdRef = useRef<string | null>(null);
 
-  // Instantly start emergency trigger (writes status 'triggered' to Firestore to notify ambulance with 0 delay)
-  const startEmergencyTrigger = useCallback(async (initialMag: number) => {
+  // Start local 30-second countdown (does NOT notify ambulances until 30s expires or user confirms)
+  const startEmergencyTrigger = useCallback((initialMag: number) => {
     if (activeEmergency || dialogOpen) return;
     setShakeMag(initialMag);
     setDialogOpen(true);
-
-    if (!firebaseUser) return;
-
-    const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
-
-    try {
-      const emergencyId = await createEmergency({
-        userId:       firebaseUser.uid,
-        userName:     user?.name || 'Unknown',
-        userPhone:    user?.phone || '',
-        userBloodGroup: user?.bloodGroup || 'Unknown',
-        location:     emergencyLoc,
-        status:       'triggered',
-        classification: 'HIGH',
-        confidenceScore: 0,
-        sensorData:   { maxShakeMagnitude: initialMag, stillnessDuration: 0, audioLevel: 0 },
-        timestamp:    Date.now(),
-      });
-
-      pendingEmergencyIdRef.current = emergencyId;
-
-      setActiveEmergency({
-        id: emergencyId,
-        userId: firebaseUser.uid,
-        userName: user?.name || 'Unknown',
-        userPhone: user?.phone || '',
-        userBloodGroup: user?.bloodGroup || 'Unknown',
-        location: emergencyLoc,
-        status: 'triggered',
-        classification: 'HIGH',
-        confidenceScore: 0,
-        sensorData: { maxShakeMagnitude: initialMag, stillnessDuration: 0, audioLevel: 0 },
-        timestamp: Date.now(),
-      });
-    } catch (err) {
-      console.error("Failed to pre-trigger emergency:", err);
-    }
-  }, [activeEmergency, dialogOpen, firebaseUser, gps.location, user]);
+  }, [activeEmergency, dialogOpen]);
 
   // Shake handlers
   const handleShake = useCallback((mag: number) => {
@@ -192,8 +154,6 @@ export default function UserDashboard() {
         sensorData:   { maxShakeMagnitude: 0, stillnessDuration: 0, audioLevel: 0 },
         timestamp:    Date.now(),
       });
-
-      pendingEmergencyIdRef.current = emergencyId;
 
       setActiveEmergency({
         id: emergencyId,
@@ -331,7 +291,12 @@ export default function UserDashboard() {
       const limited = all.slice(0, 10);
       setHistory(limited);
       
-      const active = all.find(e => ['triggered','confirmed','dispatched'].includes(e.status));
+      // Only resume active emergency if it was created in the last 15 minutes and is actually in progress (dispatched/en_route or fresh confirmed)
+      const now = Date.now();
+      const active = all.find(e => 
+        (Math.abs(now - e.timestamp) < 15 * 60 * 1000) &&
+        (['dispatched', 'en_route'].includes(e.status) || (e.status === 'confirmed' && Math.abs(now - e.timestamp) < 10 * 60 * 1000))
+      );
       setActiveEmergency(active || null);
       if (active && (active.userId.startsWith('bystander_') || active.id === trackedEmergencyId)) {
         setBystanderMode(true);
@@ -383,49 +348,49 @@ export default function UserDashboard() {
     );
   }, [allEmergencies]);
 
-  const handleAbort = useCallback(async () => {
+  const handleAbort = useCallback(() => {
     setDialogOpen(false);
-    const id = activeEmergency?.id || pendingEmergencyIdRef.current;
-    if (id) {
-      await updateEmergency(id, { status: 'aborted' as const });
-    }
-    setActiveEmergency(null);
-    pendingEmergencyIdRef.current = null;
-  }, [activeEmergency]);
+  }, []);
 
   const handleConfirmed = useCallback(async (result: AIAnalysisResult, sensor: SensorData) => {
     setDialogOpen(false);
-    
-    const id = activeEmergency?.id || pendingEmergencyIdRef.current;
-    if (!id || !firebaseUser) return;
+    if (!firebaseUser) return;
 
     // Use GPS location if available, otherwise fallback to mock Chennai location
     const emergencyLoc = gps.location || { lat: 13.0627, lng: 80.2545 };
 
-    const updateData = {
-      status: 'confirmed' as const,
-      classification: result.classification,
-      confidenceScore: result.confidenceScore,
-      sensorData: sensor,
-      location: emergencyLoc,
-    };
-
     try {
-      await updateEmergency(id, updateData);
+      // NOW write to Firestore with status 'confirmed' - this is the EXACT moment it becomes visible to ambulances!
+      const emergencyId = await createEmergency({
+        userId:         firebaseUser.uid,
+        userName:       user?.name || firebaseUser.displayName || 'Patient',
+        userPhone:      user?.phone || '',
+        userBloodGroup: user?.bloodGroup || 'O+',
+        location:       emergencyLoc,
+        status:         'confirmed',
+        classification: result.classification,
+        confidenceScore: result.confidenceScore,
+        sensorData:     sensor,
+        timestamp:      Date.now(),
+      });
 
-      setActiveEmergency(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          ...updateData,
-        };
+      setActiveEmergency({
+        id: emergencyId,
+        userId: firebaseUser.uid,
+        userName: user?.name || firebaseUser.displayName || 'Patient',
+        userPhone: user?.phone || '',
+        userBloodGroup: user?.bloodGroup || 'O+',
+        location: emergencyLoc,
+        status: 'confirmed',
+        classification: result.classification,
+        confidenceScore: result.confidenceScore,
+        sensorData: sensor,
+        timestamp: Date.now(),
       });
     } catch (err) {
-      console.error("Failed to confirm emergency:", err);
+      console.error("Failed to create confirmed emergency:", err);
     }
-    
-    pendingEmergencyIdRef.current = null;
-  }, [activeEmergency, firebaseUser, gps.location]);
+  }, [firebaseUser, gps.location, user]);
 
   const cancelEmergency = async () => {
     if (activeEmergency) {
@@ -672,7 +637,11 @@ export default function UserDashboard() {
             {/* GPS Proximity / Standby Map */}
             <MapView
               center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
-              showRoute={!!dispatchedAmbulance}
+              routePoints={
+                dispatchedAmbulance?.location && (gps.location || activeEmergency?.location)
+                  ? [dispatchedAmbulance.location, (gps.location || activeEmergency?.location)!]
+                  : undefined
+              }
               markers={[
                 { 
                   lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
@@ -680,7 +649,9 @@ export default function UserDashboard() {
                   label: 'Incident Location', 
                   color: 'red' as const, 
                   pulse: true,
-                  iconText: '📍'
+                  iconText: '📍',
+                  category: 'Emergency Incident',
+                  details: 'Live incident coordinate broadcasted to emergency responders',
                 },
                 ...(dispatchedAmbulance?.location ? [{
                   lat: dispatchedAmbulance.location.lat,
@@ -688,7 +659,10 @@ export default function UserDashboard() {
                   label: `🚨 Dispatched Unit: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
                   color: 'orange' as const,
                   pulse: true,
-                  iconText: '🚑'
+                  iconText: '🚑',
+                  category: 'Dispatched Ambulance',
+                  details: `Vehicle: ${dispatchedAmbulance.vehicleNo} · Driver: ${dispatchedAmbulance.driverName} (${dispatchedAmbulance.phone})`,
+                  distance: `${haversineKm(gps.location?.lat ?? 13.0627, gps.location?.lng ?? 80.2545, dispatchedAmbulance.location.lat, dispatchedAmbulance.location.lng).toFixed(1)} km away`,
                 }] : ambulances
                   .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
                   .map(a => {
@@ -701,18 +675,26 @@ export default function UserDashboard() {
                         : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
                       color: isBusy ? ('orange' as const) : ('green' as const),
                       pulse: isBusy,
-                      iconText: isBusy ? '🚨' : '🚑'
+                      iconText: isBusy ? '🚨' : '🚑',
+                      category: isBusy ? 'Ambulance (On Mission)' : 'Ambulance (Standby / Available)',
+                      details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'}`,
                     };
                   })),
                 ...hospitals
                   .filter(h => h.location && (h.location.lat !== 0 || h.location.lng !== 0))
-                  .map(h => ({
-                    lat: h.location.lat,
-                    lng: h.location.lng,
-                    label: `🏥 ${h.name} (${h.beds?.emergency?.available ?? 0} ER beds, ${h.beds?.icu?.available ?? 0} ICU)`,
-                    color: 'purple' as const,
-                    iconText: '🏥'
-                  }))
+                  .map(h => {
+                    const dist = haversineKm(gps.location?.lat ?? 13.0627, gps.location?.lng ?? 80.2545, h.location.lat, h.location.lng);
+                    return {
+                      lat: h.location.lat,
+                      lng: h.location.lng,
+                      label: h.name,
+                      color: 'purple' as const,
+                      iconText: '🏥',
+                      category: h.specialties?.[0] || 'Hospital / Medical Center',
+                      details: `🛏️ ER: ${h.beds?.emergency?.available ?? 0} Beds · ICU: ${h.beds?.icu?.available ?? 0} Beds · O₂: ${h.oxygen?.cylinders ?? 20} cyl`,
+                      distance: `${dist.toFixed(1)} km away`,
+                    };
+                  })
               ]}
             />
 
@@ -864,7 +846,11 @@ export default function UserDashboard() {
                 {/* Live Map / Tracker */}
                 <MapView
                   center={gps.location || activeEmergency?.location || { lat: 13.0627, lng: 80.2545 }}
-                  showRoute={!!dispatchedAmbulance}
+                  routePoints={
+                    dispatchedAmbulance?.location && (gps.location || activeEmergency?.location)
+                      ? [dispatchedAmbulance.location, (gps.location || activeEmergency?.location)!]
+                      : undefined
+                  }
                   markers={[
                     { 
                       lat: gps.location?.lat ?? activeEmergency?.location.lat ?? 13.0627, 
@@ -872,7 +858,9 @@ export default function UserDashboard() {
                       label: activeEmergency ? 'Emergency Location (You)' : 'Your Location', 
                       color: activeEmergency ? ('red' as const) : ('blue' as const), 
                       pulse: true,
-                      iconText: activeEmergency ? '📍' : '👤'
+                      iconText: activeEmergency ? '📍' : '👤',
+                      category: activeEmergency ? 'Emergency Incident' : 'User Location',
+                      details: activeEmergency ? 'Emergency alert active' : 'Live GPS fix',
                     },
                     ...(dispatchedAmbulance?.location ? [{
                       lat: dispatchedAmbulance.location.lat,
@@ -880,7 +868,10 @@ export default function UserDashboard() {
                       label: `🚨 Dispatched Unit: ${dispatchedAmbulance.vehicleNo} (${dispatchedAmbulance.driverName})`,
                       color: 'orange' as const,
                       pulse: true,
-                      iconText: '🚑'
+                      iconText: '🚑',
+                      category: 'Dispatched Ambulance',
+                      details: `Vehicle: ${dispatchedAmbulance.vehicleNo} · Driver: ${dispatchedAmbulance.driverName} (${dispatchedAmbulance.phone})`,
+                      distance: `${haversineKm(gps.location?.lat ?? 13.0627, gps.location?.lng ?? 80.2545, dispatchedAmbulance.location.lat, dispatchedAmbulance.location.lng).toFixed(1)} km away`,
                     }] : ambulances
                       .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
                       .map(a => {
@@ -893,18 +884,26 @@ export default function UserDashboard() {
                             : `🟢 Free: ${a.vehicleNo} (${a.driverName || 'Driver'})`,
                           color: isBusy ? ('orange' as const) : ('green' as const),
                           pulse: isBusy,
-                          iconText: isBusy ? '🚨' : '🚑'
+                          iconText: isBusy ? '🚨' : '🚑',
+                          category: isBusy ? 'Ambulance (On Mission)' : 'Ambulance (Standby / Available)',
+                          details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'}`,
                         };
                       })),
                     ...hospitals
                       .filter(h => h.location && (h.location.lat !== 0 || h.location.lng !== 0))
-                      .map(h => ({
-                        lat: h.location.lat,
-                        lng: h.location.lng,
-                        label: `🏥 ${h.name} (${h.beds?.emergency?.available ?? 0} ER beds, ${h.beds?.icu?.available ?? 0} ICU)`,
-                        color: 'purple' as const,
-                        iconText: '🏥'
-                      }))
+                      .map(h => {
+                        const dist = haversineKm(gps.location?.lat ?? 13.0627, gps.location?.lng ?? 80.2545, h.location.lat, h.location.lng);
+                        return {
+                          lat: h.location.lat,
+                          lng: h.location.lng,
+                          label: h.name,
+                          color: 'purple' as const,
+                          iconText: '🏥',
+                          category: h.specialties?.[0] || 'Hospital / Medical Center',
+                          details: `🛏️ ER: ${h.beds?.emergency?.available ?? 0} Beds · ICU: ${h.beds?.icu?.available ?? 0} Beds · O₂: ${h.oxygen?.cylinders ?? 20} cyl`,
+                          distance: `${dist.toFixed(1)} km away`,
+                        };
+                      })
                   ]}
                 />
 

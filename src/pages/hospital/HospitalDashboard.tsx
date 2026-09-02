@@ -468,7 +468,11 @@ export default function HospitalDashboard() {
                             </p>
                             <MapView
                               center={ambulanceProfile?.location || activeEmergency?.location || localStats!.location}
-                              showRoute={true}
+                              routePoints={
+                                ambulanceProfile?.location && localStats?.location
+                                  ? [ambulanceProfile.location, localStats.location]
+                                  : undefined
+                              }
                               zoom={13}
                               height="200px"
                               markers={[

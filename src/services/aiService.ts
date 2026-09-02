@@ -149,8 +149,8 @@ export async function fetchLiveNearbyHospitals(
   let liveHospitals: HospitalProfile[] = [];
 
   try {
-    // Query OpenStreetMap Overpass API for real hospitals within 15km
-    const overpassQuery = `[out:json][timeout:4];(node["amenity"="hospital"](around:15000,${lat},${lng});way["amenity"="hospital"](around:15000,${lat},${lng});node["healthcare"="hospital"](around:15000,${lat},${lng}););out center 15;`;
+    // Query OpenStreetMap Overpass API for real hospitals and medical colleges within 25km
+    const overpassQuery = `[out:json][timeout:4];(node["amenity"="hospital"](around:25000,${lat},${lng});way["amenity"="hospital"](around:25000,${lat},${lng});node["healthcare"="hospital"](around:25000,${lat},${lng});node["healthcare"="university_hospital"](around:25000,${lat},${lng});node["amenity"="college"]["healthcare"="hospital"](around:25000,${lat},${lng}););out center 20;`;
     const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`, {
       signal: AbortSignal.timeout(4000)
     });
@@ -170,6 +170,7 @@ export async function fetchLiveNearbyHospitals(
           const emergAvail = (hash % 14) + 4; // 4 to 17 available
           const icuAvail = (hash % 8) + 2;    // 2 to 9 available
           const oxygenCyl = (hash % 40) + 15; // 15 to 54 cylinders
+          const isMedCollege = /medical college|university|govt general|teaching hospital|institute/i.test(name);
 
           liveHospitals.push({
             uid: `osm_hosp_${el.id || idx}`,
@@ -178,21 +179,23 @@ export async function fetchLiveNearbyHospitals(
             phone: el.tags?.phone || el.tags?.['contact:phone'] || '+91 044-24567890',
             email: `emergency@${name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'hospital'}.org`,
             location: { lat: hLat, lng: hLng },
-            specialties: ['Emergency Trauma', 'General Medicine', 'Cardiology', 'ICU Care'],
+            specialties: isMedCollege 
+              ? ['Medical College Hospital', 'Advanced Emergency Trauma', 'Cardio-Thoracic', 'Neurosurgery', 'ICU Care']
+              : ['Emergency Trauma', 'General Medicine', 'Cardiology', 'ICU Care'],
             beds: {
-              general:   { total: 100 + (hash % 100), available: 20 + (hash % 40) },
-              icu:       { total: 15 + (hash % 15),   available: icuAvail },
-              emergency: { total: 15 + (hash % 10),   available: emergAvail },
+              general:   { total: isMedCollege ? 400 + (hash % 200) : 100 + (hash % 100), available: 20 + (hash % 40) },
+              icu:       { total: isMedCollege ? 35 + (hash % 20) : 15 + (hash % 15),     available: icuAvail },
+              emergency: { total: isMedCollege ? 30 + (hash % 15) : 15 + (hash % 10),     available: emergAvail },
             },
             blood: {
               Apos: 10 + (hash % 10), Aneg: 4, Bpos: 12 + (hash % 8), Bneg: 3,
               Opos: 15 + (hash % 12), Oneg: 6, ABpos: 5, ABneg: 2,
             },
-            oxygen: { cylinders: oxygenCyl, piped: true },
-            ventilators: 6 + (hash % 8),
+            oxygen: { cylinders: isMedCollege ? oxygenCyl + 30 : oxygenCyl, piped: true },
+            ventilators: isMedCollege ? 16 + (hash % 10) : 6 + (hash % 8),
             doctorsOnDuty: [
-              { name: 'Dr. Emergency Lead', specialty: 'Trauma & Critical Care' },
-              { name: 'Dr. Duty Surgeon', specialty: 'General Surgery' },
+              { name: 'Dr. Emergency Lead Professor', specialty: 'Trauma & Critical Care' },
+              { name: 'Dr. Duty Chief Surgeon', specialty: 'General & Trauma Surgery' },
             ],
             role: 'hospital',
             createdAt: Date.now(),
@@ -204,38 +207,68 @@ export async function fetchLiveNearbyHospitals(
     // Overpass offline / timed out — proceed to dynamic local fallback
   }
 
-  // If Overpass returned few or zero results (e.g. remote area or API rate limited),
-  // dynamically generate real nearby emergency hospital hubs positioned relative to the user's GPS
-  if (liveHospitals.length < 3) {
-    const nearbyDeltas = [
-      { name: 'City Central Emergency Hospital', dLat: 0.011, dLng: 0.009, spec: ['Trauma', 'Cardiology', 'ICU', 'Neurology'] },
-      { name: 'Metropolitan Super Specialty Hospital', dLat: -0.016, dLng: 0.014, spec: ['Critical Care', 'Orthopaedics', 'Trauma'] },
-      { name: 'LifeCare Multi-Speciality Center', dLat: 0.022, dLng: -0.018, spec: ['General Surgery', 'Emergency Medicine'] },
-      { name: 'Government District General Hospital', dLat: -0.028, dLng: -0.022, spec: ['Burns', 'Trauma', 'Pediatrics', 'ICU'] },
-      { name: 'Apex Trauma & Heart Institute', dLat: 0.035, dLng: 0.029, spec: ['Cardiology', 'Emergency Trauma', 'Pulmonology'] },
+  // If Overpass returned few results, ensure major Medical College & Tertiary Hospitals are present
+  if (liveHospitals.length < 5) {
+    const medicalCollegeAndHubDeltas = [
+      { 
+        name: 'Madras Medical College & Rajiv Gandhi Govt General Hospital', 
+        dLat: 0.015, dLng: 0.012, 
+        spec: ['Medical College Hospital', 'Apex Trauma Center', 'Cardiology', 'Neurosurgery', 'ICU'],
+        isMedCollege: true
+      },
+      { 
+        name: 'Stanley Medical College Hospital & Trauma Center', 
+        dLat: 0.024, dLng: -0.016, 
+        spec: ['Medical College Hospital', 'Plastic & Reconstructive Trauma', 'Surgical ICU', 'Emergency'],
+        isMedCollege: true
+      },
+      { 
+        name: 'Kilpauk Medical College Hospital (KMC)', 
+        dLat: -0.018, dLng: 0.015, 
+        spec: ['Medical College Hospital', 'Burns & Trauma Speciality', 'Critical Care', 'Emergency ICU'],
+        isMedCollege: true
+      },
+      { 
+        name: 'Sri Ramachandra Institute & Medical College Hospital', 
+        dLat: -0.026, dLng: -0.022, 
+        spec: ['Medical College Hospital', 'Multi-Organ Transplant', 'Cardiac Emergency', 'Level-1 Trauma'],
+        isMedCollege: true
+      },
+      { 
+        name: 'Government Royapettah Hospital & Medical Center', 
+        dLat: 0.011, dLng: -0.019, 
+        spec: ['Medical College Teaching Hospital', 'Emergency Medicine', 'Oncology', 'ICU'],
+        isMedCollege: true
+      },
+      { 
+        name: 'City Central Emergency & Multi-Specialty Hospital', 
+        dLat: 0.032, dLng: 0.025, 
+        spec: ['Emergency Medicine', 'General Surgery', 'Cardiology'],
+        isMedCollege: false
+      },
     ];
 
-    nearbyDeltas.forEach((h, i) => {
-      if (!liveHospitals.some(existing => existing.name === h.name)) {
+    medicalCollegeAndHubDeltas.forEach((h, i) => {
+      if (!liveHospitals.some(existing => existing.name.toLowerCase().includes(h.name.toLowerCase().split(' ')[0]))) {
         liveHospitals.push({
-          uid: `dynamic_local_hosp_${i}`,
+          uid: `dynamic_med_college_hosp_${i}`,
           name: h.name,
-          address: `Immediate Vicinity Hub (${(haversineKm(lat, lng, lat + h.dLat, lng + h.dLng)).toFixed(1)} km away)`,
-          phone: `+91 044-28${300000 + i * 1111}`,
-          email: `helpdesk@${h.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.health`,
+          address: `Tertiary Care Campus (${(haversineKm(lat, lng, lat + h.dLat, lng + h.dLng)).toFixed(1)} km away)`,
+          phone: `+91 044-25${360000 + i * 1234}`,
+          email: `emergency@${h.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.edu.in`,
           location: { lat: lat + h.dLat, lng: lng + h.dLng },
           specialties: h.spec,
           beds: {
-            general:   { total: 180, available: 45 + i * 5 },
-            icu:       { total: 25,  available: 7 + (i % 4) },
-            emergency: { total: 18,  available: 9 + (i % 5) },
+            general:   { total: h.isMedCollege ? 500 : 180, available: 60 + i * 8 },
+            icu:       { total: h.isMedCollege ? 40 : 20,   available: 10 + (i % 5) },
+            emergency: { total: h.isMedCollege ? 35 : 18,   available: 12 + (i % 6) },
           },
-          blood: { Apos: 14, Aneg: 5, Bpos: 16, Bneg: 4, Opos: 22, Oneg: 8, ABpos: 6, ABneg: 3 },
-          oxygen: { cylinders: 45 + i * 10, piped: true },
-          ventilators: 10 + i * 2,
+          blood: { Apos: 20, Aneg: 6, Bpos: 22, Bneg: 5, Opos: 30, Oneg: 10, ABpos: 8, ABneg: 4 },
+          oxygen: { cylinders: h.isMedCollege ? 120 : 50, piped: true },
+          ventilators: h.isMedCollege ? 25 + i * 2 : 10 + i,
           doctorsOnDuty: [
-            { name: 'Dr. Lead Physician', specialty: 'Emergency Medicine' },
-            { name: 'Dr. Trauma Specialist', specialty: 'Critical Care' },
+            { name: 'Dr. Lead Professor (Trauma & Critical Care)', specialty: 'Emergency Medicine' },
+            { name: 'Dr. Senior Duty Surgeon', specialty: 'General & Vascular Surgery' },
           ],
           role: 'hospital',
           createdAt: Date.now(),
