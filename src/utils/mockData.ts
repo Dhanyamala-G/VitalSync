@@ -92,9 +92,9 @@ export const MOCK_HOSPITALS = [
   },
   {
     name: 'Saveetha Medical College and Hospital',
-    address: 'Saveetha Nagar, Thandalam, Poonamallee Highway, Chennai - 602105',
+    address: 'Saveetha Nagar, Poonamallee High Road, Chennai - 600077',
     phone: '+91 044-66726672',
-    location: { lat: 13.0274, lng: 80.0163 },
+    location: { lat: 13.0545, lng: 80.2285 },
     specialties: ['Medical College Hospital', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', 'Neurology', '24/7 Emergency ICU', 'Blood Bank'],
     beds: {
       general:   { total: 600, available: 145 },

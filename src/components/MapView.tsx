@@ -78,7 +78,7 @@ const COLOR_MAP: Record<string, string> = {
 
 export default function MapView({
   center,
-  zoom = 14,
+  zoom = 13,
   markers = [],
   height = '240px',
   className = '',

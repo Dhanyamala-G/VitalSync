@@ -211,7 +211,7 @@ export async function fetchLiveNearbyHospitals(
   const medicalCollegeAndHubDeltas = [
     { 
       name: 'Saveetha Medical College and Hospital', 
-      dLat: -0.012, dLng: -0.028, 
+      dLat: -0.008, dLng: -0.016, 
       spec: ['Medical College Hospital', 'Advanced Level-1 Trauma', 'Cardio-Thoracic Surgery', '24/7 Emergency ICU', 'Blood Bank'],
       isMedCollege: true
     },
@@ -235,7 +235,7 @@ export async function fetchLiveNearbyHospitals(
     },
     { 
       name: 'Sri Ramachandra Institute & Medical College Hospital', 
-      dLat: -0.026, dLng: -0.022, 
+      dLat: -0.022, dLng: -0.019, 
       spec: ['Medical College Hospital', 'Multi-Organ Transplant', 'Cardiac Emergency', 'Level-1 Trauma'],
       isMedCollege: true
     },
@@ -247,7 +247,7 @@ export async function fetchLiveNearbyHospitals(
     },
     { 
       name: 'City Central Emergency & Multi-Specialty Hospital', 
-      dLat: 0.032, dLng: 0.025, 
+      dLat: 0.025, dLng: 0.018, 
       spec: ['Emergency Medicine', 'General Surgery', 'Cardiology'],
       isMedCollege: false
     },
@@ -287,10 +287,13 @@ export async function fetchLiveNearbyHospitals(
 
 function mergeHospitals(live: HospitalProfile[], registered: HospitalProfile[]): HospitalProfile[] {
   const map = new Map<string, HospitalProfile>();
-  registered.forEach(r => map.set(r.name.toLowerCase(), r));
-  live.forEach(l => {
-    if (!map.has(l.name.toLowerCase())) {
-      map.set(l.name.toLowerCase(), l);
+  live.forEach(l => map.set(l.name.toLowerCase(), l));
+  registered.forEach(r => {
+    const existing = map.get(r.name.toLowerCase());
+    if (existing) {
+      map.set(r.name.toLowerCase(), { ...r, ...existing, uid: r.uid || existing.uid });
+    } else {
+      map.set(r.name.toLowerCase(), r);
     }
   });
   return Array.from(map.values());

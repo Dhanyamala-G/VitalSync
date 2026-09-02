@@ -22,6 +22,7 @@ import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbula
 import { fetchLiveNearbyHospitals, haversineKm } from '../../services/aiService';
 import type { UserProfile, AIAnalysisResult, SensorData, Emergency, AmbulanceProfile, HospitalProfile } from '../../types';
 import { collection, onSnapshot, query, doc, setDoc } from 'firebase/firestore';
+import { MOCK_HOSPITALS } from '../../utils/mockData';
 import { db } from '../../firebase/config';
 
 export default function UserDashboard() {
@@ -33,7 +34,7 @@ export default function UserDashboard() {
   const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
   const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
   const [ambulances,      setAmbulances]      = useState<AmbulanceProfile[]>([]);
-  const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
+  const [hospitals,       setHospitals]       = useState<HospitalProfile[]>(MOCK_HOSPITALS as HospitalProfile[]);
   const [allEmergencies,  setAllEmergencies]  = useState<Emergency[]>([]);
   const [history,         setHistory]         = useState<Emergency[]>([]);
   const [motionEnabled,   setMotionEnabled]   = useState(false);

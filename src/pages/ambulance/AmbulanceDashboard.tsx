@@ -23,6 +23,7 @@ import {
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
 } from '../../services/emergencyService';
 import { recommendHospitals, haversineKm, fetchLiveNearbyHospitals } from '../../services/aiService';
+import { MOCK_HOSPITALS } from '../../utils/mockData';
 import type {
   AmbulanceProfile, Emergency, HospitalProfile,
   HospitalRecommendation,
@@ -71,7 +72,7 @@ export default function AmbulanceDashboard() {
   const [activeEmerg,     setActiveEmerg]     = useState<Emergency | null>(null);
   const [declinedIds,       setDeclinedIds]       = useState<Set<string>>(new Set());
   const [showIncomingModal, setShowIncomingModal] = useState(false);
-  const [hospitals,       setHospitals]       = useState<HospitalProfile[]>([]);
+  const [hospitals,       setHospitals]       = useState<HospitalProfile[]>(MOCK_HOSPITALS as HospitalProfile[]);
   const [recommendations, setRecommendations] = useState<HospitalRecommendation[]>([]);
   const [voiceNote,       setVoiceNote]       = useState('');
   const [patientCount,    setPatientCount]    = useState(1);
