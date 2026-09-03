@@ -155,6 +155,20 @@ export async function updateHospitalAlert(id: string, data: Partial<HospitalAler
   await updateDoc(doc(db, 'hospital_alerts', id), data);
 }
 
+export async function markHospitalAlertArrived(emergencyId: string): Promise<void> {
+  try {
+    const q = query(collection(db, 'hospital_alerts'), where('emergencyId', '==', emergencyId));
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      if (d.data().status === 'en_route') {
+        await updateDoc(doc(db, 'hospital_alerts', d.id), { status: 'arrived' });
+      }
+    }
+  } catch (err) {
+    console.warn('Could not update hospital alert to arrived:', err);
+  }
+}
+
 export async function markPatientTreatedAndDismissAlert(
   alertId: string,
   emergencyId: string,

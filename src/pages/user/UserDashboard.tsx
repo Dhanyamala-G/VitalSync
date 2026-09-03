@@ -11,12 +11,13 @@ import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
   Shield, Zap, LogOut, User, Clock, CheckCircle2,
   Contact, Siren, EyeOff, Eye, Users, ShieldAlert,
-  Edit3, Plus, X, Save, Trash2,
+  Edit3, Plus, X, Save, Trash2, Volume2,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useShakeDetector } from '../../hooks/useShakeDetector';
 import { useGPS } from '../../hooks/useGPS';
 import EmergencyDialog from '../../components/EmergencyDialog';
+import EmergencyContactCallModal from '../../components/EmergencyContactCallModal';
 import MapView from '../../components/MapView';
 import { createEmergency, updateEmergency, getTimestampMillis, subscribeToAmbulances, subscribeToEmergencies, getActiveNearbyBystanderEmergencies, fetchHospitals } from '../../services/emergencyService';
 import { fetchLiveNearbyHospitals, haversineKm } from '../../services/aiService';
@@ -29,9 +30,10 @@ export default function UserDashboard() {
   const { profile, signOut, firebaseUser, setProfile } = useAuthStore();
   const user = profile as UserProfile | null;
 
-  const [dialogOpen,      setDialogOpen]      = useState(false);
-  const [shakeMag,        setShakeMag]        = useState(0);
-  const [activeEmergency, setActiveEmergency] = useState<Emergency | null>(null);
+  const [dialogOpen,        setDialogOpen]        = useState(false);
+  const [showAICallModal,   setShowAICallModal]   = useState(false);
+  const [shakeMag,          setShakeMag]          = useState(0);
+  const [activeEmergency,   setActiveEmergency]   = useState<Emergency | null>(null);
   const [dispatchedAmbulance, setDispatchedAmbulance] = useState<AmbulanceProfile | null>(null);
   const [ambulances,      setAmbulances]      = useState<AmbulanceProfile[]>([]);
   const [hospitals,       setHospitals]       = useState<HospitalProfile[]>(MOCK_HOSPITALS as HospitalProfile[]);
@@ -342,9 +344,10 @@ export default function UserDashboard() {
 
   // Set of ambulance UIDs that are currently busy on an active mission
   const busyAmbulanceUids = useMemo(() => {
+    const now = Date.now();
     return new Set(
       allEmergencies
-        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status))
+        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status) && (Math.abs(now - e.timestamp) < 30 * 60 * 1000))
         .map(e => e.ambulanceId as string)
     );
   }, [allEmergencies]);
@@ -388,6 +391,9 @@ export default function UserDashboard() {
         sensorData: sensor,
         timestamp: Date.now(),
       });
+
+      // SIMULTANEOUSLY trigger AI Voice Emergency Call & Location Share to Emergency Contact
+      setShowAICallModal(true);
     } catch (err) {
       console.error("Failed to create confirmed emergency:", err);
     }
@@ -426,6 +432,17 @@ export default function UserDashboard() {
         shakeMagnitude={shakeMag}
         onAbort={handleAbort}
         onConfirmed={handleConfirmed}
+      />
+
+      {/* Simultaneous AI Emergency Contact Phone Call & Location Share Modal */}
+      <EmergencyContactCallModal
+        isOpen={showAICallModal}
+        onClose={() => setShowAICallModal(false)}
+        userName={user?.name || firebaseUser?.displayName || 'Citizen'}
+        userBloodGroup={user?.bloodGroup}
+        emergencyLocation={activeEmergency?.location || gps.location || { lat: 13.0627, lng: 80.2545 }}
+        emergencyContact={user?.emergencyContacts?.[0]}
+        ambulanceVehicleNo={dispatchedAmbulance?.vehicleNo}
       />
 
       {/* Nearby Active Incident Detected Confirmation Modal */}
@@ -667,7 +684,7 @@ export default function UserDashboard() {
                 }] : ambulances
                   .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
                   .map(a => {
-                    const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+                    const isBusy = busyAmbulanceUids.has(a.uid);
                     return {
                       lat: a.location!.lat,
                       lng: a.location!.lng,
@@ -678,7 +695,7 @@ export default function UserDashboard() {
                       pulse: isBusy,
                       iconText: isBusy ? '🚨' : '🚑',
                       category: isBusy ? 'Ambulance (On Mission)' : 'Ambulance (Standby / Available)',
-                      details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'}`,
+                      details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'} · Status: ${isBusy ? 'On Mission' : 'Standby Free'}`,
                     };
                   })),
                 ...hospitals
@@ -876,7 +893,7 @@ export default function UserDashboard() {
                     }] : ambulances
                       .filter(a => a.location && (a.location.lat !== 0 || a.location.lng !== 0))
                       .map(a => {
-                        const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
+                        const isBusy = busyAmbulanceUids.has(a.uid);
                         return {
                           lat: a.location!.lat,
                           lng: a.location!.lng,
@@ -887,7 +904,7 @@ export default function UserDashboard() {
                           pulse: isBusy,
                           iconText: isBusy ? '🚨' : '🚑',
                           category: isBusy ? 'Ambulance (On Mission)' : 'Ambulance (Standby / Available)',
-                          details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'}`,
+                          details: `Driver: ${a.driverName || 'Assigned'} · Type: ${a.vehicleType || 'Basic'} · Status: ${isBusy ? 'On Mission' : 'Standby Free'}`,
                         };
                       })),
                     ...hospitals
@@ -979,6 +996,33 @@ export default function UserDashboard() {
                         )}
                       </div>
                     )}
+
+                    {/* AI Automated Call & Location Transmitted Card */}
+                    <div className="bg-slate-900 text-white rounded-2xl p-4 border border-slate-800 shadow-md space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                            <Phone className="w-4 h-4 text-emerald-400" />
+                          </div>
+                          <div>
+                            <p className="font-extrabold text-xs text-white">AI Emergency Call & GPS Sent</p>
+                            <p className="text-[11px] text-slate-400">
+                              Contact: <span className="text-white font-semibold">{user?.emergencyContacts?.[0]?.name || 'Guardian'}</span> ({user?.emergencyContacts?.[0]?.phone || '+91 99887 76600'})
+                            </p>
+                          </div>
+                        </div>
+                        <span className="badge bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-black">
+                          Transmitted
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => setShowAICallModal(true)}
+                        className="btn-primary w-full py-2.5 text-xs justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl font-bold"
+                      >
+                        <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> View Live AI Call & Share Location
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <>

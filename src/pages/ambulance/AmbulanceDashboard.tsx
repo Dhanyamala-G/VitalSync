@@ -16,7 +16,7 @@ import type { MapMarker } from '../../components/MapView';
 import {
   subscribeToEmergencies, subscribeToAmbulances, updateEmergency,
   fetchHospitals, createHospitalAlert, updateAmbulanceLocation,
-  updateAmbulanceStatus,
+  updateAmbulanceStatus, markHospitalAlertArrived,
   createAmbulanceBackupRequest, subscribeToAmbulanceBackupRequests,
 } from '../../services/emergencyService';
 import { recommendHospitals, haversineKm, fetchLiveNearbyHospitals } from '../../services/aiService';
@@ -180,9 +180,10 @@ export default function AmbulanceDashboard() {
 
   // Set of ambulance UIDs currently busy on an active dispatched mission
   const busyAmbulanceUids = useMemo(() => {
+    const now = Date.now();
     return new Set(
       emergencies
-        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status))
+        .filter(e => e.ambulanceId && ['dispatched', 'confirmed', 'en_route'].includes(e.status) && (Math.abs(now - e.timestamp) < 30 * 60 * 1000))
         .map(e => e.ambulanceId as string)
     );
   }, [emergencies]);
@@ -193,7 +194,7 @@ export default function AmbulanceDashboard() {
   );
 
   const freeAmbulanceCount = otherFleetAmbulances.filter(
-    a => !busyAmbulanceUids.has(a.uid) && a.status !== 'on_mission'
+    a => !busyAmbulanceUids.has(a.uid)
   ).length;
 
   const formatDistance = (km?: number) => {
@@ -419,14 +420,16 @@ export default function AmbulanceDashboard() {
       return;
     }
     const targetHospName = bestHosp?.hospital.name || 'Hospital ER';
+    const emergencyIdToResolve = activeEmerg.id;
     try {
-      await updateEmergency(activeEmerg.id, {
+      await updateEmergency(emergencyIdToResolve, {
         status: 'resolved',
         resolvedAt: Date.now(),
       });
+      await markHospitalAlertArrived(emergencyIdToResolve);
       if (firebaseUser?.uid) {
-        // Disable fleet unit upon hospital handover (sets status to offline)
-        await updateAmbulanceStatus(firebaseUser.uid, 'offline');
+        // Free the ambulance for new missions immediately upon handover
+        await updateAmbulanceStatus(firebaseUser.uid, 'available');
         if (gps.location) {
           await updateAmbulanceLocation(firebaseUser.uid, gps.location.lat, gps.location.lng);
         }
@@ -439,7 +442,7 @@ export default function AmbulanceDashboard() {
       setSentAlert(false);
       setArrivedBanner(false);
       setHospitalHandoverDone(true);
-      setIsFleetUnitDisabled(true);
+      setIsFleetUnitDisabled(false);
       setLastHandoverHospital(targetHospName);
       setTab('alerts');
       setTimeout(() => setHospitalHandoverDone(false), 8000);
@@ -517,31 +520,30 @@ export default function AmbulanceDashboard() {
   const ambLng = gps.location?.lng ?? 80.2545;
 
   if (gps.location) {
+    const isSelfBusy = hasActiveMission || isTransitToHospital;
     mapMarkers.push({
       lat: gps.location.lat,
       lng: gps.location.lng,
       label: isFleetUnitDisabled
-        ? `You: ${amb?.vehicleNo || 'Ambulance'} (Disabled - Post-Handover)`
+        ? `⛔ Disabled: ${amb?.vehicleNo || 'Ambulance'}`
         : isTransitToHospital
-        ? `You: ${amb?.vehicleNo || 'Ambulance'} (Patient Onboard → ${bestHosp?.hospital.name || 'Hospital'})`
+        ? `🚨 In Transit: ${amb?.vehicleNo || 'Ambulance'} (→ ${bestHosp?.hospital.name || 'Hospital ER'})`
         : hasActiveMission
-        ? `You: ${amb?.vehicleNo || 'Ambulance'} (On Mission)`
-        : `You: ${amb?.vehicleNo || 'Ambulance'} (Standby Free)`,
-      color: isFleetUnitDisabled ? 'gray' : isTransitToHospital ? 'orange' : hasActiveMission ? 'orange' : 'blue',
-      pulse: !isFleetUnitDisabled && (hasActiveMission || isTransitToHospital),
-      iconText: isFleetUnitDisabled ? '⛔' : '🚑',
+        ? `🟠 On Mission: ${amb?.vehicleNo || 'Ambulance'}`
+        : `🟢 Free: ${amb?.vehicleNo || 'Ambulance'} (Standby Available)`,
+      color: isFleetUnitDisabled ? 'gray' : isSelfBusy ? 'orange' : 'green',
+      pulse: isSelfBusy,
+      iconText: isFleetUnitDisabled ? '⛔' : isSelfBusy ? '🚨' : '🚑',
       category: isFleetUnitDisabled
         ? 'Your Unit (Disabled / Post-Handover)'
         : isTransitToHospital
         ? 'Your Unit (In Transit to ER)'
         : hasActiveMission
         ? 'Your Unit (Dispatched & En Route)'
-        : 'Your Unit (Standby / Available)',
-      details: isFleetUnitDisabled
-        ? `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Status: Disabled Post-Handover`
-        : isTransitToHospital
+        : 'Your Unit (Standby / Free)',
+      details: isTransitToHospital
         ? `Destination: ${bestHosp?.hospital.name} · ER ETA: ~${Math.max(1, Math.round((distToTargetHospital ?? 1) * 2.4))}m`
-        : `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Driver: ${amb?.driverName || 'You'}`,
+        : `Vehicle: ${amb?.vehicleNo || 'Ambulance'} · Driver: ${amb?.driverName || 'You'} · Status: ${isSelfBusy ? 'On Mission' : 'Standby Free'}`,
       distance: isTransitToHospital && distToTargetHospital !== null
         ? `${formatDistance(distToTargetHospital)} to ER`
         : undefined,
@@ -582,8 +584,8 @@ export default function AmbulanceDashboard() {
   
   // Show nearby fleet ambulances (Green for Free, Orange for On Mission, Gray for Disabled)
   otherFleetAmbulances.forEach(a => {
-    const isBusy = busyAmbulanceUids.has(a.uid) || a.status === 'on_mission';
-    const isOffline = a.status === 'offline';
+    const isBusy = busyAmbulanceUids.has(a.uid);
+    const isOffline = a.status === 'offline' && !isBusy;
     const dist = haversineKm(ambLat, ambLng, a.location!.lat, a.location!.lng);
     mapMarkers.push({
       lat: a.location!.lat,
@@ -597,7 +599,7 @@ export default function AmbulanceDashboard() {
       pulse: isBusy,
       iconText: isOffline ? '⛔' : isBusy ? '🚨' : '🚑',
       category: isOffline ? 'Fleet Ambulance (Disabled / Post-Handover)' : isBusy ? 'Fleet Ambulance (On Mission)' : 'Fleet Ambulance (Standby Free)',
-      details: `Vehicle: ${a.vehicleNo} · Driver: ${a.driverName || 'Driver'} (${a.vehicleType}) · Status: ${isOffline ? 'Disabled' : isBusy ? 'On Mission' : 'Available'}`,
+      details: `Vehicle: ${a.vehicleNo} · Driver: ${a.driverName || 'Driver'} (${a.vehicleType}) · Status: ${isOffline ? 'Disabled' : isBusy ? 'On Mission' : 'Standby Free'}`,
       distance: `${dist.toFixed(1)} km away`,
     });
   });
