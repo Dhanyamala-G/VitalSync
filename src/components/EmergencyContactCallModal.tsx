@@ -5,9 +5,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Phone, Volume2, VolumeX,
+  Phone, PhoneOff, Volume2, VolumeX,
   MapPin, Share2, Check, Copy, ExternalLink,
-  RotateCcw, MessageSquare, Radio
+  RotateCcw, MessageSquare, Radio, X
 } from 'lucide-react';
 import type { EmergencyContact, Location } from '../types';
 
@@ -81,6 +81,13 @@ export default function EmergencyContactCallModal({
     }
     setIsSpeaking(false);
   }, []);
+
+  const handleCancelCall = useCallback(() => {
+    stopSpeaking();
+    if (durationTimerRef.current) clearInterval(durationTimerRef.current);
+    setCallState('completed');
+    onClose();
+  }, [stopSpeaking, onClose]);
 
   // Handle call lifecycle on open
   useEffect(() => {
@@ -171,17 +178,27 @@ export default function EmergencyContactCallModal({
               </div>
             </div>
 
-            <button
-              onClick={() => {
-                if (!isMuted) stopSpeaking();
-                setIsMuted(m => !m);
-              }}
-              className="p-1.5 px-2.5 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-all flex items-center gap-1 text-xs"
-              title={isMuted ? "Unmute AI Speech" : "Mute AI Speech"}
-            >
-              {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-300" /> : <Volume2 className="w-3.5 h-3.5 text-white animate-pulse" />}
-              <span className="text-[10px] font-bold">{isMuted ? 'Muted' : 'Voice'}</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  if (!isMuted) stopSpeaking();
+                  setIsMuted(m => !m);
+                }}
+                className="p-1.5 px-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-all flex items-center gap-1 text-xs"
+                title={isMuted ? "Unmute AI Speech" : "Mute AI Speech"}
+              >
+                {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-300" /> : <Volume2 className="w-3.5 h-3.5 text-white animate-pulse" />}
+                <span className="text-[10px] font-bold">{isMuted ? 'Muted' : 'Voice'}</span>
+              </button>
+
+              <button
+                onClick={handleCancelCall}
+                className="p-1.5 rounded-xl bg-red-950/70 hover:bg-red-900 text-white transition-all"
+                title="Cancel Emergency Call"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           <div className="p-5 space-y-4">
@@ -310,12 +327,20 @@ export default function EmergencyContactCallModal({
                 </a>
 
                 <button
-                  onClick={onClose}
-                  className="btn-secondary py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 justify-center rounded-xl border border-slate-700"
+                  onClick={handleCancelCall}
+                  className="btn-primary py-2.5 text-xs font-bold bg-red-600 hover:bg-red-700 text-white justify-center rounded-xl flex items-center gap-1.5 shadow-sm"
                 >
-                  <span>Close & View Map</span>
+                  <PhoneOff className="w-3.5 h-3.5" />
+                  <span>Cancel Call</span>
                 </button>
               </div>
+
+              <button
+                onClick={onClose}
+                className="w-full text-center py-1.5 text-xs text-slate-400 hover:text-slate-200 font-semibold transition-colors"
+              >
+                Minimize to Live Map
+              </button>
             </div>
           </div>
         </motion.div>
