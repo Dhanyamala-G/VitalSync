@@ -40,6 +40,8 @@ export interface UserProfile {
   insuranceId?: string;
   role: 'user';
   createdAt: number;
+  isEncrypted?: boolean;
+  encryptedPayload?: string;
 }
 
 export interface EmergencyContact {
@@ -66,6 +68,10 @@ export interface Emergency {
   sensorData: SensorData;
   timestamp: number;
   resolvedAt?: number;
+  emergencyContacts?: EmergencyContact[];
+  treatmentReport?: PatientTreatmentReport;
+  isEncrypted?: boolean;
+  encryptedPayload?: string;
 }
 
 export interface SensorData {
@@ -179,6 +185,10 @@ export interface HospitalAlert {
   timestamp: number;
   treatedAt?: number;
   treatmentReport?: PatientTreatmentReport;
+  patientName?: string;
+  patientBloodGroup?: string;
+  isEncrypted?: boolean;
+  encryptedPayload?: string;
 }
 
 // ─── AI Result ────────────────────────────────

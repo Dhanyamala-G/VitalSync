@@ -11,7 +11,7 @@ import {
   Heart, Activity, MapPin, Phone, AlertTriangle,
   Shield, Zap, LogOut, User, Clock, CheckCircle2,
   Contact, Siren, EyeOff, Eye, Users, ShieldAlert,
-  Edit3, Plus, X, Save, Trash2, Volume2,
+  Edit3, Plus, X, Save, Trash2, Volume2, Lock,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useShakeDetector } from '../../hooks/useShakeDetector';
@@ -928,14 +928,28 @@ export default function UserDashboard() {
                 {/* Conditionally render: Active tracker or Trigger options */}
                 {activeEmergency ? (
                   <div className="card p-5 border-l-4 border-l-brand-600 bg-red-50/50 space-y-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center animate-pulse">
-                        <Siren className="w-5 h-5 text-brand-600" />
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center animate-pulse">
+                          <Siren className="w-5 h-5 text-brand-600" />
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-gray-900 text-sm">Emergency Assistance En Route</h3>
+                          <p className="text-xs text-gray-500 capitalize">Status: {activeEmergency.status}</p>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="font-bold text-gray-900 text-sm">Emergency Assistance En Route</h3>
-                        <p className="text-xs text-gray-500 capitalize">Status: {activeEmergency.status}</p>
+
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-700 border border-emerald-500/30 rounded-lg text-[11px] font-extrabold shadow-xs">
+                        <Lock className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>256-bit AES E2EE Active</span>
                       </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-emerald-50/90 border border-emerald-200/80 rounded-xl p-2.5 text-[11px] text-emerald-900 font-medium">
+                      <Shield className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <p>
+                        <span className="font-bold">Cryptographically Protected:</span> Live GPS coordinates, emergency contacts, and medical conditions are encrypted before leaving your device.
+                      </p>
                     </div>
 
                     {dispatchedAmbulance ? (

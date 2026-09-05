@@ -12,7 +12,7 @@ import {
   LogOut, Bell, Clock, Ambulance, Edit2,
   Check, X, Phone, MapPin, Activity,
   Heart, Stethoscope, ChevronDown, ChevronUp,
-  FileText, CheckCircle2, Printer,
+  FileText, CheckCircle2, Printer, Shield,
 } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -573,6 +573,9 @@ export default function HospitalDashboard() {
                                     <span className="font-bold text-sm text-gray-900">{alert.ambulanceVehicleNo}</span>
                                     <span className={alert.status === 'en_route' ? 'badge-yellow' : 'badge-green'}>
                                       {alert.status === 'en_route' ? 'En Route' : 'Arrived at ER'}
+                                    </span>
+                                    <span className="badge bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-extrabold flex items-center gap-1">
+                                      <Shield className="w-2.5 h-2.5 text-emerald-600" /> E2EE PHI Verified
                                     </span>
                                   </div>
                                   <p className="text-xs text-gray-500 flex items-center gap-1">

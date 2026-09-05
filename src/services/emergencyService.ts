@@ -8,6 +8,12 @@ import {
 import { db } from '../firebase/config';
 import type { Emergency, HospitalAlert, AmbulanceProfile } from '../types';
 import { haversineKm } from './aiService';
+import {
+  encryptEmergencyPayload,
+  decryptEmergencyPayload,
+  encryptHospitalAlertPayload,
+  decryptHospitalAlertPayload,
+} from '../utils/crypto';
 
 // Helper to safely get milliseconds from Firestore timestamp, number, or Date
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,15 +28,23 @@ export function getTimestampMillis(val: any): number {
 
 // ── Emergencies ───────────────────────────────
 export async function createEmergency(data: Omit<Emergency, 'id'>): Promise<string> {
+  // Cryptographically seal personal data, contacts, and GPS with 256-bit AES-GCM
+  const securedPayload = await encryptEmergencyPayload(data);
   const ref = await addDoc(collection(db, 'emergencies'), {
-    ...data,
+    ...securedPayload,
     timestamp: serverTimestamp(),
   });
   return ref.id;
 }
 
 export async function updateEmergency(id: string, data: Partial<Emergency>): Promise<void> {
-  await updateDoc(doc(db, 'emergencies', id), data);
+  // If sensitive fields are updated, re-encrypt the payload envelope
+  if (data.userName || data.userPhone || data.location || data.sensorData || data.emergencyContacts) {
+    const secured = await encryptEmergencyPayload(data as Emergency);
+    await updateDoc(doc(db, 'emergencies', id), secured);
+  } else {
+    await updateDoc(doc(db, 'emergencies', id), data);
+  }
 }
 
 export function subscribeToEmergencies(
@@ -38,37 +52,47 @@ export function subscribeToEmergencies(
 ) {
   // BULLETPROOF: Query all and filter client-side to bypass all Firestore index limits
   const q = query(collection(db, 'emergencies'));
-  return onSnapshot(q, (snap) => {
-    const list = snap.docs
-      .map(d => {
-        const data = d.data();
-        return {
-          id: d.id,
-          ...data,
-          timestamp: getTimestampMillis(data.timestamp),
-        } as Emergency;
-      })
-      .filter(e => ['confirmed', 'dispatched', 'en_route'].includes(e.status));
-      
-    // Sort by timestamp descending
-    list.sort((a, b) => b.timestamp - a.timestamp);
-    callback(list);
+  return onSnapshot(q, async (snap) => {
+    try {
+      const decryptedList = await Promise.all(
+        snap.docs.map(async (d) => {
+          const rawData = d.data();
+          const parsedTs = getTimestampMillis(rawData.timestamp);
+          const decrypted = await decryptEmergencyPayload({
+            id: d.id,
+            ...rawData,
+            timestamp: parsedTs,
+          });
+          return decrypted;
+        })
+      );
+
+      const filtered = decryptedList.filter(e => ['confirmed', 'dispatched', 'en_route'].includes(e.status));
+      // Sort by timestamp descending
+      filtered.sort((a, b) => b.timestamp - a.timestamp);
+      callback(filtered);
+    } catch (err) {
+      console.error("Error processing decrypted emergencies:", err);
+    }
   }, (error) => {
     console.error("subscribeToEmergencies query error:", error);
   });
 }
+
 export function subscribeToEmergency(id: string, callback: (e: Emergency | null) => void) {
-  return onSnapshot(doc(db, 'emergencies', id), (snap) => {
+  return onSnapshot(doc(db, 'emergencies', id), async (snap) => {
     if (!snap.exists()) {
       callback(null);
       return;
     }
-    const data = snap.data();
-    callback({
+    const rawData = snap.data();
+    const parsedTs = getTimestampMillis(rawData.timestamp);
+    const decrypted = await decryptEmergencyPayload({
       id: snap.id,
-      ...data,
-      timestamp: getTimestampMillis(data.timestamp),
-    } as Emergency);
+      ...rawData,
+      timestamp: parsedTs,
+    });
+    callback(decrypted);
   });
 }
 
@@ -81,34 +105,44 @@ export async function getActiveNearbyBystanderEmergencies(
   try {
     const snap = await getDocs(collection(db, 'emergencies'));
     const now = Date.now();
-    const list: { emergency: Emergency; distanceMeters: number }[] = [];
 
-    snap.docs.forEach(d => {
-      const data = d.data();
-      const ts = getTimestampMillis(data.timestamp);
-      // Active emergency in progress within last 60 minutes
-      if (
-        ['triggered', 'confirmed', 'dispatched'].includes(data.status) &&
-        Math.abs(now - ts) < 60 * 60 * 1000 &&
-        data.location &&
-        typeof data.location.lat === 'number' &&
-        typeof data.location.lng === 'number'
-      ) {
-        const distKm = haversineKm(lat, lng, data.location.lat, data.location.lng);
-        if (distKm <= radiusKm) {
-          list.push({
-            emergency: {
-              id: d.id,
-              ...data,
-              timestamp: ts,
-            } as Emergency,
-            distanceMeters: Math.round(distKm * 1000),
-          });
+    const parsedList = await Promise.all(
+      snap.docs.map(async d => {
+        const rawData = d.data();
+        const ts = getTimestampMillis(rawData.timestamp);
+        // Active emergency in progress within last 60 minutes
+        if (
+          !['triggered', 'confirmed', 'dispatched'].includes(rawData.status) ||
+          Math.abs(now - ts) > 60 * 60 * 1000
+        ) {
+          return null;
         }
-      }
-    });
 
-    return list.sort((a, b) => a.distanceMeters - b.distanceMeters);
+        const decrypted = await decryptEmergencyPayload({
+          id: d.id,
+          ...rawData,
+          timestamp: ts,
+        });
+
+        if (
+          decrypted.location &&
+          typeof decrypted.location.lat === 'number' &&
+          typeof decrypted.location.lng === 'number'
+        ) {
+          const distKm = haversineKm(lat, lng, decrypted.location.lat, decrypted.location.lng);
+          if (distKm <= radiusKm) {
+            return {
+              emergency: decrypted,
+              distanceMeters: Math.round(distKm * 1000),
+            };
+          }
+        }
+        return null;
+      })
+    );
+
+    const validList = parsedList.filter((item): item is { emergency: Emergency; distanceMeters: number } => item !== null);
+    return validList.sort((a, b) => a.distanceMeters - b.distanceMeters);
   } catch (err) {
     console.error('Failed to query nearby emergencies:', err);
     return [];
@@ -144,15 +178,22 @@ export async function fetchHospitals() {
 
 // ── Hospital Alerts ───────────────────────────
 export async function createHospitalAlert(data: Omit<HospitalAlert, 'id'>): Promise<string> {
+  // Cryptographically seal patient identity and triage audio note with 256-bit AES-GCM
+  const securedPayload = await encryptHospitalAlertPayload(data);
   const ref = await addDoc(collection(db, 'hospital_alerts'), {
-    ...data,
+    ...securedPayload,
     timestamp: serverTimestamp(),
   });
   return ref.id;
 }
 
 export async function updateHospitalAlert(id: string, data: Partial<HospitalAlert>): Promise<void> {
-  await updateDoc(doc(db, 'hospital_alerts', id), data);
+  if (data.condition || data.patientName || data.patientBloodGroup || data.treatmentReport) {
+    const secured = await encryptHospitalAlertPayload(data as HospitalAlert);
+    await updateDoc(doc(db, 'hospital_alerts', id), secured);
+  } else {
+    await updateDoc(doc(db, 'hospital_alerts', id), data);
+  }
 }
 
 export async function markHospitalAlertArrived(emergencyId: string): Promise<void> {
@@ -174,11 +215,16 @@ export async function markPatientTreatedAndDismissAlert(
   emergencyId: string,
   report: import('../types').PatientTreatmentReport
 ): Promise<void> {
-  // Update hospital alert to 'treated' with complete patient treatment report attached
+  // Update hospital alert to 'treated' with encrypted patient treatment report attached
+  const securedAlertUpdate = await encryptHospitalAlertPayload({
+    treatmentReport: report,
+    status: 'treated',
+  } as HospitalAlert);
+
   await updateDoc(doc(db, 'hospital_alerts', alertId), {
+    ...securedAlertUpdate,
     status: 'treated',
     treatedAt: Date.now(),
-    treatmentReport: report,
   });
 
   // Resolve and archive emergency in emergencies collection
@@ -205,17 +251,22 @@ export function subscribeToHospitalAlerts(
 
   // BULLETPROOF: Query all and filter client-side to bypass all Firestore index limits
   const q = query(collection(db, 'hospital_alerts'));
-  return onSnapshot(q, (snap) => {
-    const list = snap.docs
-      .map(d => {
-        const data = d.data();
-        return {
-          id: d.id,
-          ...data,
-          timestamp: getTimestampMillis(data.timestamp),
-        } as HospitalAlert;
-      })
-      .filter(a => {
+  return onSnapshot(q, async (snap) => {
+    try {
+      const decryptedList = await Promise.all(
+        snap.docs.map(async (d) => {
+          const rawData = d.data();
+          const parsedTs = getTimestampMillis(rawData.timestamp);
+          const decrypted = await decryptHospitalAlertPayload({
+            id: d.id,
+            ...rawData,
+            timestamp: parsedTs,
+          });
+          return decrypted;
+        })
+      );
+
+      const filtered = decryptedList.filter(a => {
         if (a.hospitalId === hospitalId) return true;
         const targetName = hospitalName?.toLowerCase().trim();
         const alertName = a.hospitalName?.toLowerCase().trim();
@@ -231,10 +282,13 @@ export function subscribeToHospitalAlerts(
 
         return false;
       });
-      
-    // Sort by timestamp descending
-    list.sort((a, b) => b.timestamp - a.timestamp);
-    callback(list);
+
+      // Sort by timestamp descending
+      filtered.sort((a, b) => b.timestamp - a.timestamp);
+      callback(filtered);
+    } catch (err) {
+      console.error("Error processing decrypted hospital alerts:", err);
+    }
   }, (error) => {
     console.error("subscribeToHospitalAlerts query error:", error);
   });

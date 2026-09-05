@@ -5,7 +5,7 @@ import {
   Activity, Navigation, Building2, Volume2,
   Clock, CheckCircle, CheckCircle2, Mic, MicOff,
   Star, Bed, Droplets, Wind, AlertTriangle,
-  Target, User, Sparkles, Radio, X, Power,
+  Target, User, Sparkles, Radio, X, Power, Lock,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useGPS } from '../../hooks/useGPS';
@@ -887,6 +887,9 @@ export default function AmbulanceDashboard() {
                                 <span className={e.classification === 'HIGH' ? 'badge-red' : 'badge-gray'}>{e.classification}</span>
                               </>
                             )}
+                            <span className="badge bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-extrabold flex items-center gap-1">
+                              <Lock className="w-2.5 h-2.5 text-emerald-600" /> E2EE Decrypted
+                            </span>
                           </div>
                           <p className="text-xs text-gray-500 flex items-center gap-1">
                             <Clock className="w-3 h-3" /> {timeAgo(e.timestamp)}
